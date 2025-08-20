@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: ugc-script-splitter
+    env: node
+    plan: free
+    branch: main
+    rootDir: ./
+    buildCommand: |
+      npm run install-all
+      npm run build
+    startCommand: npm run start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: RATE_LIMIT_WINDOW_MS
+        value: "60000"
+      - key: RATE_LIMIT_MAX_REQUESTS
+        value: "10"
