@@ -86,7 +86,7 @@ class OpenAIService {
     console.log('[OpenAI] Base descriptions generated');
 
     // Step 3: Generate each segment with concurrency limit
-    const CONCURRENCY = 3;
+    const CONCURRENCY = 2;
     console.log('[OpenAI] Generating individual segments with concurrency =', CONCURRENCY);
 
     const segments = await mapWithConcurrency(scriptSegments, CONCURRENCY, async (scriptPart, idx) => {
@@ -353,7 +353,7 @@ class OpenAIService {
     );
 
     console.log('[OpenAI] Generating remaining segments with concurrency = 3');
-    const rest = await mapWithConcurrency(scriptSegments.slice(1), 3, async (scriptPart, localIdx) => {
+    const rest = await mapWithConcurrency(scriptSegments.slice(1), 2, async (scriptPart, localIdx) => {
       const idx = localIdx + 1;
       const segNumber = idx + 1;
       console.log(`[OpenAI] Generating segment ${segNumber}/${scriptSegments.length}`);
