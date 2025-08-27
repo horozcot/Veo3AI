@@ -17,13 +17,15 @@ const limiter = rateLimit({
 });
 router.use(limiter);
 
+// ============================
 // Generate segments endpoint
+// ============================
 router.post('/generate', async (req, res) => {
   console.log('[Generate] Request received:', {
     bodyKeys: Object.keys(req.body),
     scriptLength: req.body.script?.length || 0
   });
-  
+
   try {
     const { 
       script, 
@@ -44,13 +46,12 @@ router.post('/generate', async (req, res) => {
       productStyle,
       energyArc,
       narrativeStyle,
-      // Advanced character details
       ethnicity,
       characterFeatures,
       clothingDetails,
       accentRegion
     } = req.body;
-    
+
     // Validation
     if (!script || script.trim().length < 50) {
       console.log('[Generate] Validation failed: Script too short');
@@ -58,7 +59,7 @@ router.post('/generate', async (req, res) => {
         error: 'Script must be at least 50 characters long' 
       });
     }
-    
+
     console.log('[Generate] Starting OpenAI generation with:', {
       ageRange,
       gender,
@@ -70,8 +71,7 @@ router.post('/generate', async (req, res) => {
       settingMode,
       scriptWords: script.trim().split(/\s+/).length
     });
-    
-    // Prepare parameters
+
     const params = {
       script: script.trim(),
       ageRange,
@@ -95,8 +95,7 @@ router.post('/generate', async (req, res) => {
       clothingDetails,
       accentRegion
     };
-    
-    // ⛔️ IMPORTANT: no route-level withTimeout here.
+
     const result = continuationMode 
       ? await OpenAIService.generateSegmentsWithVoiceProfile(params)
       : await OpenAIService.generateSegments(params);
@@ -107,19 +106,18 @@ router.post('/generate', async (req, res) => {
       hasVoiceProfile: !!result.voiceProfile
     });
 
-    // Avoid double-send if the API guard already responded
     if (res.headersSent) {
       console.warn('[Generate] Response already sent (likely guard timeout). Skipping success send.');
       return;
     }
-    
+
     return res.json({
       success: true,
       segments: result.segments,
       metadata: result.metadata,
       voiceProfile: result.voiceProfile
     });
-    
+
   } catch (error) {
     console.error('[Generate] Error:', {
       message: error.message,
@@ -127,7 +125,6 @@ router.post('/generate', async (req, res) => {
       response: error.response?.data
     });
 
-    // Avoid double-send if something (like the guard) already replied
     if (res.headersSent) {
       console.error('[Generate] Response already sent; skipping error response');
       return;
@@ -142,48 +139,53 @@ router.post('/generate', async (req, res) => {
   }
 });
 
+// ============================
 // Download segments as ZIP
+// ============================
 router.post('/download', async (req, res) => {
   try {
     const { segments } = req.body;
-    
+
     res.setHeader('Content-Type', 'application/zip');
     res.setHeader('Content-Disposition', 'attachment; filename=veo3-segments.zip');
-    
+
     const archive = archiver('zip', { zlib: { level: 9 } });
     archive.pipe(res);
-    
+
     segments.forEach((segment, index) => {
       archive.append(JSON.stringify(segment, null, 2), {
         name: `segment_${(index + 1).toString().padStart(2, '0')}.json`
       });
     });
-    
-    archive.append('Instructions for Veo 3:\n1. Upload each JSON in order\n2. Generate 8-second clips\n3. Edit together with overlaps', {
-      name: 'README.txt'
-    });
-    
+
+    archive.append(
+      'Instructions for Veo 3:\n1. Upload each JSON in order\n2. Generate 8-second clips\n3. Edit together with overlaps',
+      { name: 'README.txt' }
+    );
+
     archive.finalize();
   } catch (error) {
-    console.error('Download error:', error);
+    console.error('[Download] Error:', error);
     if (res.headersSent) return;
     res.status(500).json({ error: 'Failed to create download' });
   }
 });
 
-// Generate videos from segments endpoint
+// ============================
+// Generate videos from segments
+// ============================
 router.post('/generate-videos', async (req, res) => {
   console.log('[Generate Videos] Request received');
-  
+
   try {
     const { segments } = req.body;
     if (!segments || !Array.isArray(segments) || segments.length === 0) {
       return res.status(400).json({ error: 'No segments provided for video generation' });
     }
-    
+
     console.log(`[Generate Videos] Processing ${segments.length} segments`);
     const result = await Veo3Service.generateVideosForAllSegments(segments);
-    
+
     console.log('[Generate Videos] Success:', {
       totalVideos: result.videos.length,
       status: result.videos[0]?.status
@@ -193,18 +195,18 @@ router.post('/generate-videos', async (req, res) => {
       console.warn('[Generate Videos] Response already sent. Skipping success send.');
       return;
     }
-    
+
     return res.json({
       success: true,
       videos: result.videos,
       service: 'gemini',
       message: result.message || 'Video generation initiated successfully'
     });
-    
+
   } catch (error) {
     console.error('[Generate Videos] Error:', error);
     if (res.headersSent) return;
-    return res.status(500).json({ 
+    res.status(500).json({ 
       error: 'Failed to generate videos',
       message: error.message
     });
