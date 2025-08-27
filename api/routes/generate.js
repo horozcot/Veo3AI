@@ -6,21 +6,16 @@ import archiver from 'archiver';
 
 const router = express.Router();
 
-// Rate limiting
+// Rate limiting (proxy-friendly)
 const limiter = rateLimit({
-  windowMs: 1 * 60 * 1000, // 1 minute
-  max: 10 // limit each IP to 10 requests per minute
+  windowMs: 60 * 1000,         // 1 minute
+  max: 10,                     // 10 req/min/ip
+  standardHeaders: true,
+  legacyHeaders: false,
+  validate: { xForwardedForHeader: false }, // avoid strict XFF check on Render
+  keyGenerator: (req) => req.ip,            // uses trust proxy
 });
 router.use(limiter);
-
-// Utility: ensure any async call resolves within ms or throws "<label>_timeout"
-const withTimeout = (promise, ms, label = 'op') =>
-  Promise.race([
-    promise,
-    new Promise((_, reject) =>
-      setTimeout(() => reject(new Error(`${label}_timeout`)), ms)
-    )
-  ]);
 
 // Generate segments endpoint
 router.post('/generate', async (req, res) => {
@@ -28,9 +23,7 @@ router.post('/generate', async (req, res) => {
     bodyKeys: Object.keys(req.body),
     scriptLength: req.body.script?.length || 0
   });
-
-  const CALL_TIMEOUT = 35_000; // 20s per upstream call
-
+  
   try {
     const { 
       script, 
@@ -103,18 +96,10 @@ router.post('/generate', async (req, res) => {
       accentRegion
     };
     
-    // Generate segments using OpenAI with timeout
+    // ⛔️ IMPORTANT: no route-level withTimeout here.
     const result = continuationMode 
-      ? await withTimeout(
-          OpenAIService.generateSegmentsWithVoiceProfile(params),
-          CALL_TIMEOUT,
-          'openai_voiceProfile'
-        )
-      : await withTimeout(
-          OpenAIService.generateSegments(params),
-          CALL_TIMEOUT,
-          'openai_segments'
-        );
+      ? await OpenAIService.generateSegmentsWithVoiceProfile(params)
+      : await OpenAIService.generateSegments(params);
     
     console.log('[Generate] Success:', {
       segments: result.segments.length,
@@ -122,7 +107,7 @@ router.post('/generate', async (req, res) => {
       hasVoiceProfile: !!result.voiceProfile
     });
     
-    res.json({
+    return res.json({
       success: true,
       segments: result.segments,
       metadata: result.metadata,
@@ -136,7 +121,7 @@ router.post('/generate', async (req, res) => {
       response: error.response?.data
     });
     const code = error.message?.endsWith('_timeout') ? 504 : 500;
-    res.status(code).json({ 
+    return res.status(code).json({ 
       error: 'Failed to generate segments',
       message: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error',
       details: process.env.NODE_ENV === 'development' ? error.response?.data : undefined
@@ -155,20 +140,17 @@ router.post('/download', async (req, res) => {
     const archive = archiver('zip', { zlib: { level: 9 } });
     archive.pipe(res);
     
-    // Add each segment as a JSON file
     segments.forEach((segment, index) => {
       archive.append(JSON.stringify(segment, null, 2), {
         name: `segment_${(index + 1).toString().padStart(2, '0')}.json`
       });
     });
     
-    // Add instructions file
     archive.append('Instructions for Veo 3:\n1. Upload each JSON in order\n2. Generate 8-second clips\n3. Edit together with overlaps', {
       name: 'README.txt'
     });
     
     archive.finalize();
-    
   } catch (error) {
     console.error('Download error:', error);
     res.status(500).json({ error: 'Failed to create download' });
@@ -181,28 +163,19 @@ router.post('/generate-videos', async (req, res) => {
   
   try {
     const { segments } = req.body;
-    
     if (!segments || !Array.isArray(segments) || segments.length === 0) {
-      return res.status(400).json({ 
-        error: 'No segments provided for video generation' 
-      });
+      return res.status(400).json({ error: 'No segments provided for video generation' });
     }
     
     console.log(`[Generate Videos] Processing ${segments.length} segments`);
-    
-    // Use Gemini/Vertex AI for video descriptions
-    const result = await withTimeout(
-      Veo3Service.generateVideosForAllSegments(segments),
-      CALL_TIMEOUT,
-      'veo3_videos'
-    );
+    const result = await Veo3Service.generateVideosForAllSegments(segments);
     
     console.log('[Generate Videos] Success:', {
       totalVideos: result.videos.length,
       status: result.videos[0]?.status
     });
     
-    res.json({
+    return res.json({
       success: true,
       videos: result.videos,
       service: 'gemini',
@@ -211,8 +184,7 @@ router.post('/generate-videos', async (req, res) => {
     
   } catch (error) {
     console.error('[Generate Videos] Error:', error);
-    const code = error.message?.endsWith('_timeout') ? 504 : 500;
-    res.status(code).json({ 
+    return res.status(500).json({ 
       error: 'Failed to generate videos',
       message: error.message
     });
