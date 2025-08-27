@@ -29,7 +29,7 @@ router.post('/generate', async (req, res) => {
     scriptLength: req.body.script?.length || 0
   });
 
-  const CALL_TIMEOUT = 20_000; // 20s per upstream call
+  const CALL_TIMEOUT = 35_000; // 20s per upstream call
 
   try {
     const { 

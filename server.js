@@ -67,7 +67,7 @@ app.use(express.json({ limit: '10mb' }));
 // API guard: hard timeout for all /api
 // ====================================
 app.use('/api', (req, res, next) => {
-  const HARD_TIMEOUT_MS = 28_000; // keep under host limits
+  const HARD_TIMEOUT_MS = 55_000; // keep under host limits
 
   req.setTimeout?.(HARD_TIMEOUT_MS + 2_000);
   res.setTimeout?.(HARD_TIMEOUT_MS + 2_000);
@@ -142,5 +142,5 @@ const server = app.listen(PORT, '0.0.0.0', () => {
 });
 
 // Optional: bump Node timeouts a bit
-server.headersTimeout = 65_000;
-server.requestTimeout = 60_000;
+server.headersTimeout = 75_000;
+server.requestTimeout = 70_000;
