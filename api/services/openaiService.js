@@ -19,6 +19,20 @@ const withTimeout = (promise, ms, label = 'op') =>
 const OPENAI_CALL_TIMEOUT =
   Number.parseInt(process.env.OPENAI_TIMEOUT_MS || '', 10) || 45000; // 45s default
 
+// Concurrency helper
+async function mapWithConcurrency(items, limit, worker) {
+  const results = new Array(items.length);
+  let i = 0;
+  const runners = Array.from({ length: Math.min(limit, items.length) }, async function run() {
+    while (i < items.length) {
+      const idx = i++;
+      results[idx] = await worker(items[idx], idx);
+    }
+  });
+  await Promise.all(runners);
+  return results;
+}
+
 class OpenAIService {
   constructor() {
     this.openai = new OpenAI({
@@ -71,29 +85,31 @@ class OpenAIService {
     );
     console.log('[OpenAI] Base descriptions generated');
 
-    // Step 3: Generate each segment
-    const segments = [];
-    console.log('[OpenAI] Generating individual segments...');
-    for (let i = 0; i < scriptSegments.length; i++) {
-      console.log(`[OpenAI] Generating segment ${i + 1}/${scriptSegments.length}`);
+    // Step 3: Generate each segment with concurrency limit
+    const CONCURRENCY = 3;
+    console.log('[OpenAI] Generating individual segments with concurrency =', CONCURRENCY);
+
+    const segments = await mapWithConcurrency(scriptSegments, CONCURRENCY, async (scriptPart, idx) => {
+      const segNumber = idx + 1;
+      console.log(`[OpenAI] Generating segment ${segNumber}/${scriptSegments.length}`);
       const segment = await withTimeout(
         this.generateSegment({
-          segmentNumber: i + 1,
+          segmentNumber: segNumber,
           totalSegments: scriptSegments.length,
-          scriptPart: scriptSegments[i],
+          scriptPart,
           baseDescriptions,
-          previousSegment: segments[i - 1] || null,
+          previousSegment: null, // strict continuity not guaranteed with concurrency
           template,
-          currentLocation: locations[i],
-          previousLocation: i > 0 ? locations[i - 1] : null,
-          nextLocation: i < locations.length - 1 ? locations[i + 1] : null,
+          currentLocation: locations[idx],
+          previousLocation: idx > 0 ? locations[idx - 1] : null,
+          nextLocation: idx < locations.length - 1 ? locations[idx + 1] : null,
           ...params,
         }),
         OPENAI_CALL_TIMEOUT,
-        `openai_segment_${i + 1}`
+        `openai_segment_${segNumber}`
       );
-      segments.push(segment);
-    }
+      return segment;
+    });
 
     return {
       segments,
@@ -219,7 +235,6 @@ class OpenAIService {
   async generateBaseDescriptions(params, template) {
     console.log('[OpenAI] Calling API for base descriptions');
     try {
-      const isEnhanced = params.jsonFormat === 'enhanced';
       const response = await withTimeout(
         this.openai.chat.completions.create({
           model: 'gpt-4o',
@@ -337,28 +352,31 @@ class OpenAIService {
       params
     );
 
-    const segments = [firstSegment];
-    console.log('[OpenAI] Generating remaining segments with voice/behavior focus...');
-    for (let i = 1; i < scriptSegments.length; i++) {
-      console.log(`[OpenAI] Generating segment ${i + 1}/${scriptSegments.length}`);
+    console.log('[OpenAI] Generating remaining segments with concurrency = 3');
+    const rest = await mapWithConcurrency(scriptSegments.slice(1), 3, async (scriptPart, localIdx) => {
+      const idx = localIdx + 1;
+      const segNumber = idx + 1;
+      console.log(`[OpenAI] Generating segment ${segNumber}/${scriptSegments.length}`);
       const segment = await withTimeout(
         this.generateContinuationStyleSegment({
-          segmentNumber: i + 1,
+          segmentNumber: segNumber,
           totalSegments: scriptSegments.length,
-          scriptPart: scriptSegments[i],
+          scriptPart,
           baseDescriptions,
-          previousSegment: segments[i - 1],
+          previousSegment: null, // strict continuity not guaranteed with concurrency
           voiceProfile,
-          currentLocation: locations[i],
-          previousLocation: i > 0 ? locations[i - 1] : null,
-          nextLocation: i < locations.length - 1 ? locations[i + 1] : null,
+          currentLocation: locations[idx],
+          previousLocation: idx > 0 ? locations[idx - 1] : null,
+          nextLocation: idx < locations.length - 1 ? locations[idx + 1] : null,
           ...params,
         }),
         OPENAI_CALL_TIMEOUT,
-        `openai_voice_segment_${i + 1}`
+        `openai_voice_segment_${segNumber}`
       );
-      segments.push(segment);
-    }
+      return segment;
+    });
+
+    const segments = [firstSegment, ...rest];
 
     return {
       segments,
