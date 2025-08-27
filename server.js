@@ -1,4 +1,3 @@
-// server.js
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
@@ -17,7 +16,7 @@ const __dirname = path.dirname(__filename);
 
 // --- App / Port ---
 const app = express();
-app.set('trust proxy', 1);
+app.set('trust proxy', 1); // behind Render's proxy
 const PORT = process.env.PORT || 3001;
 
 // =========================
@@ -49,7 +48,7 @@ const ALLOWED_ORIGINS = envOrigins.length ? envOrigins : DEFAULT_ORIGINS;
 
 app.use(cors({
   origin: (origin, cb) => {
-    // Allow same-origin or tools (like curl/postman with no origin)
+    // Allow same-origin or tools (curl/postman with no origin)
     if (!origin) return cb(null, true);
     return cb(null, ALLOWED_ORIGINS.includes(origin));
   },
@@ -68,14 +67,14 @@ app.use(express.json({ limit: '10mb' }));
 // API guard: hard timeout for all /api
 // ====================================
 app.use('/api', (req, res, next) => {
-  const HARD_TIMEOUT_MS = 55_000; // keep under host limits
+  const HARD_TIMEOUT_MS = 70_000; // allow longer OpenAI work
 
   req.setTimeout?.(HARD_TIMEOUT_MS + 2_000);
   res.setTimeout?.(HARD_TIMEOUT_MS + 2_000);
 
   const timer = setTimeout(() => {
+    console.warn('[api] route_timeout', req.method, req.url);
     if (!res.headersSent) {
-      console.error('[api] route_timeout', req.method, req.url);
       res.status(504).json({ ok: false, error: 'route_timeout' });
     }
   }, HARD_TIMEOUT_MS);
@@ -95,7 +94,7 @@ app.use('/api', generatePlusRoute);
 app.use('/api', generateNewContRoute);
 
 // =========================
-// Health check
+/* Health check */
 // =========================
 app.get('/api/health', (_req, res) => {
   res.json({
@@ -105,7 +104,7 @@ app.get('/api/health', (_req, res) => {
 });
 
 // =========================
-// Static React build + SPA
+/* Static React build + SPA */
 // =========================
 app.use(express.static(path.join(__dirname, 'build')));
 
@@ -122,10 +121,11 @@ app.get('*', (req, res) => {
 });
 
 // =========================
-// Global error handler
+/* Global error handler */
 // =========================
 app.use((err, _req, res, _next) => {
   console.error('Global error handler:', err.stack || err);
+  if (res.headersSent) return;
   res.status(500).json({
     error: 'Internal server error',
     message: process.env.NODE_ENV === 'development' ? err.message : 'Something went wrong',
@@ -133,7 +133,7 @@ app.use((err, _req, res, _next) => {
 });
 
 // =========================
-// Start server (Render-safe)
+/* Start server (Render-safe) */
 // =========================
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on port ${PORT}`);
@@ -142,6 +142,6 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   console.log('Has OPENAI_API_KEY?', !!process.env.OPENAI_API_KEY);
 });
 
-// Optional: bump Node timeouts a bit
-server.headersTimeout = 75_000;
-server.requestTimeout = 70_000;
+// Bump Node HTTP timeouts above HARD_TIMEOUT_MS
+server.headersTimeout = 90_000;
+server.requestTimeout = 85_000;
