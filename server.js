@@ -67,7 +67,7 @@ app.use(express.json({ limit: '10mb' }));
 // API guard: hard timeout for all /api
 // ====================================
 app.use('/api', (req, res, next) => {
-  const HARD_TIMEOUT_MS = 70_000; // allow longer OpenAI work
+  const HARD_TIMEOUT_MS = 120_000; // 120s to allow larger jobs
 
   req.setTimeout?.(HARD_TIMEOUT_MS + 2_000);
   res.setTimeout?.(HARD_TIMEOUT_MS + 2_000);
@@ -80,7 +80,7 @@ app.use('/api', (req, res, next) => {
   }, HARD_TIMEOUT_MS);
 
   res.on('finish', () => clearTimeout(timer));
-  res.on('close', () => clearTimeout(timer));
+  res.on('close',  () => clearTimeout(timer));
 
   next();
 });
@@ -143,5 +143,5 @@ const server = app.listen(PORT, '0.0.0.0', () => {
 });
 
 // Bump Node HTTP timeouts above HARD_TIMEOUT_MS
-server.headersTimeout = 90_000;
-server.requestTimeout = 85_000;
+server.headersTimeout = 135_000;
+server.requestTimeout = 130_000;
