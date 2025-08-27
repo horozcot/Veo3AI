@@ -146,18 +146,24 @@ class OpenAIService {
     const template = await this.loadTemplate(params.jsonFormat);
 
     // Step 1: Analyze and split script
-    const scriptSegments = await this.splitScript(params.script);
+    let scriptSegments = await this.splitScript(params.script);
+
+    // Optional cap from route/body for debugging/short runs
+    if (params?.maxSegments && Number.isFinite(+params.maxSegments)) {
+      scriptSegments = scriptSegments.slice(0, +params.maxSegments);
+    }
+
     console.log('[OpenAI] Script split into', scriptSegments.length, 'segments');
 
-    // Prepare location data
+    // Prepare location data mapped to segments length
     let locations = [];
     if (params.settingMode === 'single') {
       locations = Array(scriptSegments.length).fill(params.room);
     } else {
-      locations = params.locations || [];
-      while (locations.length < scriptSegments.length) {
-        locations.push(locations[locations.length - 1] || 'living room');
-      }
+      const src = params.locations || [];
+      locations = Array.from({ length: scriptSegments.length }, (_, i) => {
+        return src[i] ?? src[src.length - 1] ?? 'living room';
+      });
     }
 
     // Step 2: Base descriptions
@@ -169,35 +175,50 @@ class OpenAIService {
     );
     console.log('[OpenAI] Base descriptions generated');
 
-    // Step 3: Generate each segment with capped concurrency
-    console.log(
-      `[OpenAI] Generating individual segments with concurrency = ${SEGMENT_CONCURRENCY}`
-    );
+    // Helper to build a single segment
+    const makeSegment = async (scriptPart, i, previousSegment) => {
+      const idx = i + 1;
+      console.log(`[OpenAI] Generating segment ${idx}/${scriptSegments.length}`);
+      const seg = await withTimeout(
+        this.generateSegment({
+          segmentNumber: idx,
+          totalSegments: scriptSegments.length,
+          scriptPart,
+          baseDescriptions,
+          previousSegment, // null in concurrent mode
+          template,
+          currentLocation: locations[i],
+          previousLocation: i > 0 ? locations[i - 1] : null,
+          nextLocation: i < locations.length - 1 ? locations[i + 1] : null,
+          ...params,
+        }),
+        OPENAI_CALL_TIMEOUT,
+        `openai_segment_${idx}`
+      );
+      return seg;
+    };
 
-    const segments = await mapWithConcurrency(
-      scriptSegments,
-      SEGMENT_CONCURRENCY,
-      async (scriptPart, i) => {
-        const idx = i + 1;
-        console.log(`[OpenAI] Generating segment ${idx}/${scriptSegments.length}`);
-        return await withTimeout(
-          this.generateSegment({
-            segmentNumber: idx,
-            totalSegments: scriptSegments.length,
-            scriptPart,
-            baseDescriptions,
-            previousSegment: i > 0 ? segments?.[i - 1] || null : null,
-            template,
-            currentLocation: locations[i],
-            previousLocation: i > 0 ? locations[i - 1] : null,
-            nextLocation: i < locations.length - 1 ? locations[i + 1] : null,
-            ...params,
-          }),
-          OPENAI_CALL_TIMEOUT,
-          `openai_segment_${idx}`
-        );
+    // Step 3: Generate each segment
+    let segments;
+
+    if (params?.sequential) {
+      // Sequential mode: preserve previousSegment continuity
+      segments = [];
+      for (let i = 0; i < scriptSegments.length; i++) {
+        const prev = i > 0 ? segments[i - 1] : null;
+        segments.push(await makeSegment(scriptSegments[i], i, prev));
       }
-    );
+    } else {
+      // Concurrent mode: never read from segments[] inside the worker
+      segments = await mapWithConcurrency(
+        scriptSegments,
+        SEGMENT_CONCURRENCY,
+        async (scriptPart, i) => {
+          // NO reference to segments[i-1] here
+          return await makeSegment(scriptPart, i, null);
+        }
+      );
+    }
 
     return {
       segments,
@@ -294,7 +315,7 @@ class OpenAIService {
           const merged = segment + ' ' + rawSegments[i + 1];
           const mergedWords = merged.split(/\s+/).length;
 
-          if (mergedWords <= 30) {
+        if (mergedWords <= 30) {
             finalSegments.push(merged);
             i++;
             continue;
@@ -412,7 +433,8 @@ Base Voice: ${params.baseDescriptions.voice}
 General Environment: ${params.baseDescriptions.environment}
 Product Handling: ${params.baseDescriptions.productHandling || 'Natural handling'}
 
-${params.previousSegment ? `Previous segment ended with:\nPosition: ${params.previousSegment.action_timeline?.transition_prep || params.previousSegment.segment_info?.continuity_markers?.end_position || 'N/A'}` : 'This is the opening segment.'}
+${params.previousSegment ? `Previous segment ended with:
+Position: ${params.previousSegment.action_timeline?.transition_prep || params.previousSegment.segment_info?.continuity_markers?.end_position || 'N/A'}` : 'This is the opening segment.'}
 `,
             },
           ],
