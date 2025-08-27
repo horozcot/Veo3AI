@@ -100,12 +100,18 @@ router.post('/generate', async (req, res) => {
     const result = continuationMode 
       ? await OpenAIService.generateSegmentsWithVoiceProfile(params)
       : await OpenAIService.generateSegments(params);
-    
+
     console.log('[Generate] Success:', {
       segments: result.segments.length,
       characterId: result.metadata.characterId,
       hasVoiceProfile: !!result.voiceProfile
     });
+
+    // Avoid double-send if the API guard already responded
+    if (res.headersSent) {
+      console.warn('[Generate] Response already sent (likely guard timeout). Skipping success send.');
+      return;
+    }
     
     return res.json({
       success: true,
@@ -120,6 +126,13 @@ router.post('/generate', async (req, res) => {
       stack: error.stack,
       response: error.response?.data
     });
+
+    // Avoid double-send if something (like the guard) already replied
+    if (res.headersSent) {
+      console.error('[Generate] Response already sent; skipping error response');
+      return;
+    }
+
     const code = error.message?.endsWith('_timeout') ? 504 : 500;
     return res.status(code).json({ 
       error: 'Failed to generate segments',
@@ -153,6 +166,7 @@ router.post('/download', async (req, res) => {
     archive.finalize();
   } catch (error) {
     console.error('Download error:', error);
+    if (res.headersSent) return;
     res.status(500).json({ error: 'Failed to create download' });
   }
 });
@@ -174,6 +188,11 @@ router.post('/generate-videos', async (req, res) => {
       totalVideos: result.videos.length,
       status: result.videos[0]?.status
     });
+
+    if (res.headersSent) {
+      console.warn('[Generate Videos] Response already sent. Skipping success send.');
+      return;
+    }
     
     return res.json({
       success: true,
@@ -184,6 +203,7 @@ router.post('/generate-videos', async (req, res) => {
     
   } catch (error) {
     console.error('[Generate Videos] Error:', error);
+    if (res.headersSent) return;
     return res.status(500).json({ 
       error: 'Failed to generate videos',
       message: error.message
