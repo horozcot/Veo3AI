@@ -230,6 +230,29 @@ class OpenAIService {
     };
   }
 
+  // ---- NEW: compatibility wrapper for continuationMode ----
+  async generateSegmentsWithVoiceProfile(params) {
+    // Reuse hardened generator; keep caller's chosen format (or default).
+    const jsonFormat = params?.jsonFormat || 'standard';
+    const result = await this.generateSegments({ ...params, jsonFormat });
+
+    // Best-effort voice profile derived from first segment.
+    let voiceProfile = null;
+    try {
+      if (result.segments?.length) {
+        voiceProfile = await this.extractDetailedVoiceProfile(result.segments[0], params);
+      }
+    } catch (e) {
+      console.warn('[OpenAI] voice profile enrichment failed (non-fatal):', e?.message || e);
+    }
+
+    return {
+      ...result,
+      voiceProfile,
+    };
+  }
+  // --------------------------------------------------------
+
   async splitScript(script) {
     const wordsPerSecond = 150 / 60; // 2.5 wps
     const minWordsFor6Seconds = 15;
@@ -315,7 +338,7 @@ class OpenAIService {
           const merged = segment + ' ' + rawSegments[i + 1];
           const mergedWords = merged.split(/\s+/).length;
 
-        if (mergedWords <= 30) {
+          if (mergedWords <= 30) {
             finalSegments.push(merged);
             i++;
             continue;
