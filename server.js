@@ -30,7 +30,6 @@ app.use((req, res, next) => {
 });
 
 // CORS (allow your dev + prod origins)
-// You can also set CORS_ORIGINS="https://yourapp.onrender.com,https://yourdomain.com"
 const envOrigins = (process.env.CORS_ORIGINS || '')
   .split(',')
   .map(s => s.trim())
@@ -48,8 +47,7 @@ const ALLOWED_ORIGINS = envOrigins.length ? envOrigins : DEFAULT_ORIGINS;
 
 app.use(cors({
   origin: (origin, cb) => {
-    // Allow same-origin or tools (curl/postman with no origin)
-    if (!origin) return cb(null, true);
+    if (!origin) return cb(null, true); // allow curl/postman
     return cb(null, ALLOWED_ORIGINS.includes(origin));
   },
   methods: ['GET', 'POST', 'OPTIONS'],
@@ -67,7 +65,8 @@ app.use(express.json({ limit: '10mb' }));
 // API guard: hard timeout for all /api
 // ====================================
 app.use('/api', (req, res, next) => {
-  const HARD_TIMEOUT_MS = 120_000; // 120s to allow larger jobs
+  // keep under Render's ~100s proxy cap
+  const HARD_TIMEOUT_MS = 95_000;
 
   req.setTimeout?.(HARD_TIMEOUT_MS + 2_000);
   res.setTimeout?.(HARD_TIMEOUT_MS + 2_000);
@@ -86,7 +85,7 @@ app.use('/api', (req, res, next) => {
 });
 
 // =========================
-// API Routes (mounted here)
+// API Routes
 // =========================
 app.use('/api', generateRoute);
 app.use('/api', generateContinuationRoute);
@@ -94,7 +93,7 @@ app.use('/api', generatePlusRoute);
 app.use('/api', generateNewContRoute);
 
 // =========================
-/* Health check */
+// Health check
 // =========================
 app.get('/api/health', (_req, res) => {
   res.json({
@@ -104,11 +103,10 @@ app.get('/api/health', (_req, res) => {
 });
 
 // =========================
-/* Static React build + SPA */
+// Static React build + SPA
 // =========================
 app.use(express.static(path.join(__dirname, 'build')));
 
-// Catch-all → send React index.html
 app.get('*', (req, res) => {
   const indexPath = path.join(__dirname, 'build', 'index.html');
   console.log(`Serving React app from: ${indexPath}`);
@@ -121,7 +119,7 @@ app.get('*', (req, res) => {
 });
 
 // =========================
-/* Global error handler */
+// Global error handler
 // =========================
 app.use((err, _req, res, _next) => {
   console.error('Global error handler:', err.stack || err);
@@ -133,7 +131,7 @@ app.use((err, _req, res, _next) => {
 });
 
 // =========================
-/* Start server (Render-safe) */
+// Start server (Render-safe)
 // =========================
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on port ${PORT}`);
@@ -142,6 +140,6 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   console.log('Has OPENAI_API_KEY?', !!process.env.OPENAI_API_KEY);
 });
 
-// Bump Node HTTP timeouts above HARD_TIMEOUT_MS
-server.headersTimeout = 135_000;
-server.requestTimeout = 130_000;
+// bump Node HTTP timeouts just above guard
+server.headersTimeout = 110_000;
+server.requestTimeout = 105_000;
