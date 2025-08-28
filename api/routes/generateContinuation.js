@@ -22,7 +22,7 @@ router.use(limiter);
 router.post('/generate-continuation', async (req, res) => {
   const requestId = cryptoRandomId();
   const log = (msg, extra = {}) =>
-    console.log([Continuation:${requestId}] ${msg}, extra);
+    console.log(`[Continuation:${requestId}] ${msg}`, extra);
 
   log('Request received', {
     bodyKeys: Object.keys(req.body || {}),
@@ -37,7 +37,7 @@ router.post('/generate-continuation', async (req, res) => {
       maintainEnergy,
       product,
 
-      // Optional context (kept flexible for future UI fields)
+      // Optional context (future use)
       ageRange,
       gender,
       style,
@@ -91,9 +91,8 @@ router.post('/generate-continuation', async (req, res) => {
     log('Success');
 
     if (res.headersSent) {
-      // If API guard timed out already, don't double-send
       console.warn(
-        [Continuation:${requestId}] Response already sent; skipping success body.
+        `[Continuation:${requestId}] Response already sent; skipping success body.`
       );
       return;
     }
@@ -104,7 +103,7 @@ router.post('/generate-continuation', async (req, res) => {
       requestId,
     });
   } catch (error) {
-    console.error([Continuation:${requestId}] Error, {
+    console.error(`[Continuation:${requestId}] Error`, {
       message: error?.message,
       stack: error?.stack,
       response: error?.response?.data,
@@ -112,7 +111,7 @@ router.post('/generate-continuation', async (req, res) => {
 
     if (res.headersSent) {
       console.error(
-        [Continuation:${requestId}] Response already sent; skipping error body.
+        `[Continuation:${requestId}] Response already sent; skipping error body.`
       );
       return;
     }
