@@ -155,6 +155,13 @@ class OpenAIService {
 
     console.log('[OpenAI] Script split into', scriptSegments.length, 'segments');
 
+    // Step 1b: decide strategy based on job size (safe defaults for long scripts)
+    const autoSequential = (params.sequential === undefined)
+      ? (scriptSegments.length >= 8)   // auto true for 8+ segments
+      : !!params.sequential;
+
+    const effectiveConcurrency = autoSequential ? 1 : SEGMENT_CONCURRENCY;
+
     // Prepare location data mapped to segments length
     let locations = [];
     if (params.settingMode === 'single') {
@@ -174,6 +181,10 @@ class OpenAIService {
       'openai_base'
     );
     console.log('[OpenAI] Base descriptions generated');
+
+    console.log(
+      `[OpenAI] Generating individual segments with concurrency = ${effectiveConcurrency} (sequential=${autoSequential})`
+    );
 
     // Helper to build a single segment
     const makeSegment = async (scriptPart, i, previousSegment) => {
@@ -201,7 +212,7 @@ class OpenAIService {
     // Step 3: Generate each segment
     let segments;
 
-    if (params?.sequential) {
+    if (autoSequential) {
       // Sequential mode: preserve previousSegment continuity
       segments = [];
       for (let i = 0; i < scriptSegments.length; i++) {
@@ -212,7 +223,7 @@ class OpenAIService {
       // Concurrent mode: never read from segments[] inside the worker
       segments = await mapWithConcurrency(
         scriptSegments,
-        SEGMENT_CONCURRENCY,
+        effectiveConcurrency,
         async (scriptPart, i) => {
           // NO reference to segments[i-1] here
           return await makeSegment(scriptPart, i, null);
@@ -229,29 +240,6 @@ class OpenAIService {
       },
     };
   }
-
-  // ---- NEW: compatibility wrapper for continuationMode ----
-  async generateSegmentsWithVoiceProfile(params) {
-    // Reuse hardened generator; keep caller's chosen format (or default).
-    const jsonFormat = params?.jsonFormat || 'standard';
-    const result = await this.generateSegments({ ...params, jsonFormat });
-
-    // Best-effort voice profile derived from first segment.
-    let voiceProfile = null;
-    try {
-      if (result.segments?.length) {
-        voiceProfile = await this.extractDetailedVoiceProfile(result.segments[0], params);
-      }
-    } catch (e) {
-      console.warn('[OpenAI] voice profile enrichment failed (non-fatal):', e?.message || e);
-    }
-
-    return {
-      ...result,
-      voiceProfile,
-    };
-  }
-  // --------------------------------------------------------
 
   async splitScript(script) {
     const wordsPerSecond = 150 / 60; // 2.5 wps
@@ -463,7 +451,7 @@ Position: ${params.previousSegment.action_timeline?.transition_prep || params.pr
           ],
           response_format: { type: 'json_object' },
           temperature: 0.5,
-          max_tokens: 4500,
+          max_tokens: 3000, // tighter for speed
         }),
         OPENAI_CALL_TIMEOUT,
         `openai_segment_${params.segmentNumber}`
@@ -488,9 +476,6 @@ Position: ${params.previousSegment.action_timeline?.transition_prep || params.pr
       '_'
     );
   }
-
-  // Optional: continuation/voice-profile modes can remain the same.
-  // If you use them heavily, apply the same safe-JSON pattern there too:
 
   async generateContinuationStyleSegment(params) {
     const template = await this.loadTemplate(params.jsonFormat || 'standard');
@@ -527,7 +512,7 @@ ${JSON.stringify(params.voiceProfile || {}, null, 2)}
           ],
           response_format: { type: 'json_object' },
           temperature: 0.5,
-          max_tokens: 4000,
+          max_tokens: 3000,
         }),
         OPENAI_CALL_TIMEOUT,
         `openai_continuation_style_${params.segmentNumber}`
@@ -537,7 +522,7 @@ ${JSON.stringify(params.voiceProfile || {}, null, 2)}
       let parsed = safeParseJSON(raw);
       if (!parsed.ok) {
         console.warn('[OpenAI] Continuation-style JSON parse failed — attempting repair');
-        parsed = { ok: true, value: await repairJSONWithModel(this.openai, raw, 3500) };
+        parsed = { ok: true, value: await repairJSONWithModel(this.openai, raw, 3200) };
       }
       return parsed.value;
     } catch (error) {

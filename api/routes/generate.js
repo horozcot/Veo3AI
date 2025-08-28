@@ -3,7 +3,6 @@ import rateLimit from 'express-rate-limit';
 import OpenAIService from '../services/openaiService.js';
 import Veo3Service from '../services/veo3Service.js';
 import archiver from 'archiver';
-import crypto from 'crypto';
 
 const router = express.Router();
 
@@ -14,27 +13,19 @@ const limiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   validate: { xForwardedForHeader: false }, // avoid strict XFF check on Render
-  keyGenerator: (req) => req.ip,            // uses trust proxy (set in server.js)
+  keyGenerator: (req) => req.ip,            // uses trust proxy
 });
 router.use(limiter);
-
-// Small helper to classify errors -> HTTP status
-function statusFromError(err) {
-  const msg = String(err?.message || '');
-  if (msg.endsWith('_timeout') || msg.includes('route_timeout')) return 504;
-  if (msg.startsWith('json_parse_error_') || msg.includes('json_repair_failed')) return 502;
-  return 500;
-}
 
 // ============================
 // Generate segments endpoint
 // ============================
 router.post('/generate', async (req, res) => {
-  // Per-request id for better tracing
-  const reqId = crypto.randomUUID();
-  res.setHeader('X-Request-Id', reqId);
+  const requestId = cryptoRandomId();
+  const log = (msg, extra = {}) =>
+    console.log(`[Generate:${requestId}] ${msg}`, extra);
 
-  console.log(`[Generate:${reqId}] Request received:`, {
+  log('Request received:', {
     bodyKeys: Object.keys(req.body),
     scriptLength: req.body.script?.length || 0
   });
@@ -63,20 +54,20 @@ router.post('/generate', async (req, res) => {
       characterFeatures,
       clothingDetails,
       accentRegion,
-      // optional knobs (harmless if service ignores them)
+      // NEW: control runtime behavior
       maxSegments,
       sequential
     } = req.body;
 
     // Validation
     if (!script || script.trim().length < 50) {
-      console.log(`[Generate:${reqId}] Validation failed: Script too short`);
+      log('Validation failed: Script too short');
       return res.status(400).json({ 
         error: 'Script must be at least 50 characters long' 
       });
     }
 
-    console.log(`[Generate:${reqId}] Starting OpenAI generation with:`, {
+    log('Starting OpenAI generation with:', {
       ageRange,
       gender,
       product,
@@ -112,23 +103,22 @@ router.post('/generate', async (req, res) => {
       characterFeatures,
       clothingDetails,
       accentRegion,
-      // pass-through optional knobs
       maxSegments,
       sequential
     };
 
     const result = continuationMode 
-      ? await OpenAIService.generateSegmentsWithVoiceProfile(params)
+      ? await OpenAIService.generateContinuationStyleSegment(params) // or your voice-profile variant if you add it
       : await OpenAIService.generateSegments(params);
 
-    console.log(`[Generate:${reqId}] Success:`, {
+    log('Success:', {
       segments: result.segments.length,
       characterId: result.metadata.characterId,
       hasVoiceProfile: !!result.voiceProfile
     });
 
     if (res.headersSent) {
-      console.warn(`[Generate:${reqId}] Response already sent (likely guard timeout). Skipping success send.`);
+      console.warn('[Generate] Response already sent (likely guard timeout). Skipping success send.');
       return;
     }
 
@@ -136,28 +126,26 @@ router.post('/generate', async (req, res) => {
       success: true,
       segments: result.segments,
       metadata: result.metadata,
-      voiceProfile: result.voiceProfile,
-      requestId: reqId
+      voiceProfile: result.voiceProfile
     });
 
   } catch (error) {
-    console.error(`[Generate:${reqId}] Error:`, {
+    console.error(`[Generate:${cryptoRandomId()}] Error:`, {
       message: error.message,
       stack: error.stack,
       response: error.response?.data
     });
 
     if (res.headersSent) {
-      console.error(`[Generate:${reqId}] Response already sent; skipping error response`);
+      console.error('[Generate] Response already sent; skipping error response');
       return;
     }
 
-    const code = statusFromError(error);
+    const code = error.message?.endsWith('_timeout') ? 504 : 500;
     return res.status(code).json({ 
       error: 'Failed to generate segments',
       message: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error',
-      details: process.env.NODE_ENV === 'development' ? error.response?.data : undefined,
-      requestId: reqId
+      details: process.env.NODE_ENV === 'development' ? error.response?.data : undefined
     });
   }
 });
@@ -166,8 +154,6 @@ router.post('/generate', async (req, res) => {
 // Download segments as ZIP
 // ============================
 router.post('/download', async (req, res) => {
-  const reqId = crypto.randomUUID();
-  res.setHeader('X-Request-Id', reqId);
   try {
     const { segments } = req.body;
 
@@ -190,9 +176,9 @@ router.post('/download', async (req, res) => {
 
     archive.finalize();
   } catch (error) {
-    console.error(`[Download:${reqId}] Error:`, error);
+    console.error('[Download] Error:', error);
     if (res.headersSent) return;
-    res.status(500).json({ error: 'Failed to create download', requestId: reqId });
+    res.status(500).json({ error: 'Failed to create download' });
   }
 });
 
@@ -200,26 +186,24 @@ router.post('/download', async (req, res) => {
 // Generate videos from segments
 // ============================
 router.post('/generate-videos', async (req, res) => {
-  const reqId = crypto.randomUUID();
-  res.setHeader('X-Request-Id', reqId);
-  console.log(`[Generate Videos:${reqId}] Request received`);
+  console.log('[Generate Videos] Request received');
 
   try {
     const { segments } = req.body;
     if (!segments || !Array.isArray(segments) || segments.length === 0) {
-      return res.status(400).json({ error: 'No segments provided for video generation', requestId: reqId });
+      return res.status(400).json({ error: 'No segments provided for video generation' });
     }
 
-    console.log(`[Generate Videos:${reqId}] Processing ${segments.length} segments`);
+    console.log(`[Generate Videos] Processing ${segments.length} segments`);
     const result = await Veo3Service.generateVideosForAllSegments(segments);
 
-    console.log(`[Generate Videos:${reqId}] Success:`, {
+    console.log('[Generate Videos] Success:', {
       totalVideos: result.videos.length,
       status: result.videos[0]?.status
     });
 
     if (res.headersSent) {
-      console.warn(`[Generate Videos:${reqId}] Response already sent. Skipping success send.`);
+      console.warn('[Generate Videos] Response already sent. Skipping success send.');
       return;
     }
 
@@ -227,19 +211,22 @@ router.post('/generate-videos', async (req, res) => {
       success: true,
       videos: result.videos,
       service: 'gemini',
-      message: result.message || 'Video generation initiated successfully',
-      requestId: reqId
+      message: result.message || 'Video generation initiated successfully'
     });
 
   } catch (error) {
-    console.error(`[Generate Videos:${reqId}] Error:`, error);
+    console.error('[Generate Videos] Error:', error);
     if (res.headersSent) return;
     res.status(500).json({ 
       error: 'Failed to generate videos',
-      message: error.message,
-      requestId: reqId
+      message: error.message
     });
   }
 });
 
 export default router;
+
+// tiny helper
+function cryptoRandomId() {
+  return Math.random().toString(36).slice(2) + '-' + Date.now().toString(36);
+}
