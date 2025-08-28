@@ -66,7 +66,7 @@ app.use(express.json({ limit: '10mb' }));
 // ====================================
 app.use('/api', (req, res, next) => {
   // keep under Render's ~100s proxy cap
-  const HARD_TIMEOUT_MS = 95_000;
+  const HARD_TIMEOUT_MS = 180_000;
 
   req.setTimeout?.(HARD_TIMEOUT_MS + 2_000);
   res.setTimeout?.(HARD_TIMEOUT_MS + 2_000);
@@ -141,5 +141,5 @@ const server = app.listen(PORT, '0.0.0.0', () => {
 });
 
 // bump Node HTTP timeouts just above guard
-server.headersTimeout = 110_000;
-server.requestTimeout = 105_000;
+server.headersTimeout = 200_000;
+server.requestTimeout = 195_000;

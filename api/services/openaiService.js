@@ -62,7 +62,7 @@ function sliceToOuterBraces(str) {
 }
 
 function basicJsonCleanup(str) {
-  // normalize newlines & remove code fences
+  // normalize newlines & remove code fences / nulls
   let s = (str || '').replace(/\r/g, '').replace(/\u0000/g, '');
   s = s.replace(/```(?:json)?/gi, '').replace(/```/g, '');
   // remove trailing commas before } or ]
@@ -156,9 +156,8 @@ class OpenAIService {
     console.log('[OpenAI] Script split into', scriptSegments.length, 'segments');
 
     // Step 1b: decide strategy based on job size (safe defaults for long scripts)
-    const autoSequential = (params.sequential === undefined)
-      ? (scriptSegments.length >= 8)   // auto true for 8+ segments
-      : !!params.sequential;
+    const autoSequential =
+      params.sequential === undefined ? scriptSegments.length >= 8 : !!params.sequential;
 
     const effectiveConcurrency = autoSequential ? 1 : SEGMENT_CONCURRENCY;
 
@@ -477,6 +476,9 @@ Position: ${params.previousSegment.action_timeline?.transition_prep || params.pr
     );
   }
 
+  // -------------------------------
+  // Continuation-style segment (same schema, voice-focused)
+  // -------------------------------
   async generateContinuationStyleSegment(params) {
     const template = await this.loadTemplate(params.jsonFormat || 'standard');
     try {
@@ -531,6 +533,64 @@ ${JSON.stringify(params.voiceProfile || {}, null, 2)}
     }
   }
 
+  // -------------------------------
+  // Continuation (image+voice minimal schema)
+  // -------------------------------
+  async generateContinuationSegment(params) {
+    const templatePath = path.join(
+      __dirname,
+      '../../instructions/veo3-continuation-minimal.md'
+    );
+    const template = await fs.readFile(templatePath, 'utf8');
+
+    try {
+      const response = await withTimeout(
+        this.openai.chat.completions.create({
+          model: 'gpt-4o',
+          messages: [
+            {
+              role: 'system',
+              content: `${template}\n\nGenerate a continuation segment with MINIMAL description but DETAILED voice/behavior continuity. Return ONLY JSON.`,
+            },
+            {
+              role: 'user',
+              content: `Create a continuation segment:
+
+Image Context: Character from screenshot at ${params.imageUrl}
+Previous Dialogue: "${params.previousSegment?.action_timeline?.dialogue || 'N/A'}"
+New Dialogue: "${params.script}"
+Product: ${params.product}
+Maintain Energy: ${params.maintainEnergy ? 'Yes' : 'No'}
+
+Voice Profile to Match EXACTLY:
+${JSON.stringify(params.voiceProfile || {}, null, 2)}
+`,
+            },
+          ],
+          response_format: { type: 'json_object' },
+          temperature: 0.4,
+          max_tokens: 2500,
+        }),
+        OPENAI_CALL_TIMEOUT,
+        'openai_continuation_minimal'
+      );
+
+      const raw = response.choices?.[0]?.message?.content || '';
+      let parsed = safeParseJSON(raw);
+      if (!parsed.ok) {
+        console.warn('[OpenAI] Continuation JSON parse failed — attempting repair');
+        parsed = { ok: true, value: await repairJSONWithModel(this.openai, raw, 2500) };
+      }
+      return parsed.value;
+    } catch (error) {
+      console.error('[OpenAI] Error in generateContinuationSegment:', error);
+      throw error;
+    }
+  }
+
+  // -------------------------------
+  // Voice profile extraction (JSON only)
+  // -------------------------------
   async extractDetailedVoiceProfile(segment, params) {
     console.log('[OpenAI] Extracting detailed voice profile');
     try {
@@ -598,6 +658,95 @@ Return:
         vocalTexture: 'smooth',
       };
     }
+  }
+
+  // -------------------------------
+  // Full pipeline with voice profile (standard + continuity)
+  // -------------------------------
+  async generateSegmentsWithVoiceProfile(params) {
+    // Always run sequentially for continuity
+    const template = await this.loadTemplate('enhanced');
+
+    // Split and optionally cap
+    let scriptSegments = await this.splitScript(params.script);
+    if (params?.maxSegments && Number.isFinite(+params.maxSegments)) {
+      scriptSegments = scriptSegments.slice(0, +params.maxSegments);
+    }
+
+    // Locations
+    let locations = [];
+    if (params.settingMode === 'single') {
+      locations = Array(scriptSegments.length).fill(params.room);
+    } else {
+      const src = params.locations || [];
+      locations = Array.from({ length: scriptSegments.length }, (_, i) => {
+        return src[i] ?? src[src.length - 1] ?? 'living room';
+      });
+    }
+
+    // Base descriptions (enhanced)
+    const baseDescriptions = await withTimeout(
+      this.generateBaseDescriptions({ ...params, jsonFormat: 'enhanced' }, template),
+      OPENAI_CALL_TIMEOUT,
+      'openai_voice_base'
+    );
+
+    // First segment (enhanced) to seed voice
+    const firstSegment = await withTimeout(
+      this.generateSegment({
+        segmentNumber: 1,
+        totalSegments: scriptSegments.length,
+        scriptPart: scriptSegments[0],
+        baseDescriptions,
+        previousSegment: null,
+        template,
+        currentLocation: locations[0],
+        previousLocation: null,
+        nextLocation: locations.length > 1 ? locations[1] : null,
+        ...params,
+        jsonFormat: 'enhanced',
+      }),
+      OPENAI_CALL_TIMEOUT,
+      'openai_voice_first'
+    );
+
+    // Extract voice profile
+    const voiceProfile = await this.extractDetailedVoiceProfile(firstSegment, {
+      ...params,
+      script: params.script,
+    });
+
+    // Remaining segments (sequential, continuation-style)
+    const segments = [firstSegment];
+    for (let i = 1; i < scriptSegments.length; i++) {
+      const seg = await withTimeout(
+        this.generateContinuationStyleSegment({
+          segmentNumber: i + 1,
+          totalSegments: scriptSegments.length,
+          scriptPart: scriptSegments[i],
+          baseDescriptions,
+          previousSegment: segments[i - 1],
+          voiceProfile,
+          currentLocation: locations[i],
+          previousLocation: i > 0 ? locations[i - 1] : null,
+          nextLocation: i < locations.length - 1 ? locations[i + 1] : null,
+          ...params,
+        }),
+        OPENAI_CALL_TIMEOUT,
+        `openai_voice_segment_${i + 1}`
+      );
+      segments.push(seg);
+    }
+
+    return {
+      segments,
+      metadata: {
+        totalSegments: segments.length,
+        estimatedDuration: segments.length * 8,
+        characterId: this.generateCharacterId(params),
+      },
+      voiceProfile,
+    };
   }
 
   getEnergyLevel(energyArc, segmentNumber, totalSegments) {
