@@ -6,7 +6,6 @@ import { fileURLToPath } from 'url';
 
 // API route modules
 import generateRoute from './api/routes/generate.js';
-import generateContinuationRoute from './api/routes/generateContinuation.js';
 import generatePlusRoute from './api/routes/generate.plus.js';
 import generateNewContRoute from './api/routes/generate.newcont.js';
 
@@ -65,8 +64,8 @@ app.use(express.json({ limit: '10mb' }));
 // API guard: hard timeout for all /api
 // ====================================
 app.use('/api', (req, res, next) => {
-  // keep under Render's ~100s proxy cap
-  const HARD_TIMEOUT_MS = 180_000;
+  // configurable via .env
+  const HARD_TIMEOUT_MS = Number(process.env.ROUTE_TIMEOUT_MS || 900_000);
 
   req.setTimeout?.(HARD_TIMEOUT_MS + 2_000);
   res.setTimeout?.(HARD_TIMEOUT_MS + 2_000);
@@ -88,7 +87,6 @@ app.use('/api', (req, res, next) => {
 // API Routes
 // =========================
 app.use('/api', generateRoute);
-app.use('/api', generateContinuationRoute);
 app.use('/api', generatePlusRoute);
 app.use('/api', generateNewContRoute);
 
@@ -141,5 +139,5 @@ const server = app.listen(PORT, '0.0.0.0', () => {
 });
 
 // bump Node HTTP timeouts just above guard
-server.headersTimeout = 200_000;
-server.requestTimeout = 195_000;
+server.headersTimeout = 905_000;
+server.requestTimeout = 905_000;

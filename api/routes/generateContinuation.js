@@ -5,130 +5,118 @@ import OpenAIService from '../services/openaiService.js';
 
 const router = express.Router();
 
-// -------- Rate limiting (proxy-friendly) --------
+// proxy-friendly rate limit (same as /generate)
 const limiter = rateLimit({
-  windowMs: 60 * 1000,                 // 1 minute
-  max: 10,                             // 10 req/min/IP
+  windowMs: Number(process.env.RATE_LIMIT_WINDOW_MS || 60_000),
+  max: Number(process.env.RATE_LIMIT_MAX_REQUESTS || 10),
   standardHeaders: true,
   legacyHeaders: false,
-  validate: { xForwardedForHeader: false }, // Render sets XFF; don't hard-fail
-  keyGenerator: (req) => req.ip,            // honors app.set('trust proxy', 1)
+  validate: { xForwardedForHeader: false },
+  keyGenerator: (req) => req.ip,
 });
 router.use(limiter);
 
-// ================================
+// tiny id helper for logs
+function randomId() {
+  return Math.random().toString(36).slice(2) + '-' + Date.now().toString(36);
+}
+
 // POST /api/generate-continuation
-// ================================
 router.post('/generate-continuation', async (req, res) => {
-  const requestId = cryptoRandomId();
+  const requestId = randomId();
   const log = (msg, extra = {}) =>
     console.log(`[Continuation:${requestId}] ${msg}`, extra);
 
-  log('Request received', {
-    bodyKeys: Object.keys(req.body || {}),
-  });
-
   try {
     const {
-      imageUrl,
+      // required
       script,
-      voiceProfile,
-      previousSegment,
-      maintainEnergy,
       product,
-
-      // Optional context (future use)
+      voiceProfile,
+      // optional scene/character knobs (defaults mirror Standard)
       ageRange,
       gender,
       style,
+      jsonFormat = 'enhanced',
+      settingMode = 'single',
+      room = 'living room',
+      locations = [],
       cameraStyle,
       timeOfDay,
       backgroundLife,
+      productStyle,
+      energyArc,
+      narrativeStyle,
+      // continuity inputs
+      previousSegment = null,
     } = req.body || {};
 
-    // ---- Validation ----
-    const missing = [];
-    if (!imageUrl) missing.push('imageUrl');
-    if (!script || typeof script !== 'string' || script.trim().length < 10)
-      missing.push('script(>=10 chars)');
-    if (!voiceProfile) missing.push('voiceProfile');
-    if (!product) missing.push('product');
-
-    if (missing.length) {
-      log('Validation failed', { missing });
-      return res.status(400).json({
-        error: 'Missing or invalid required fields',
-        missing,
-      });
+    // basic validation
+    if (!script || script.trim().length < 50) {
+      return res.status(400).json({ error: 'Script must be at least 50 characters long' });
+    }
+    if (!product) {
+      return res.status(400).json({ error: 'product is required' });
+    }
+    if (!voiceProfile || typeof voiceProfile !== 'object') {
+      return res.status(400).json({ error: 'voiceProfile (object) is required' });
     }
 
-    log('Generating continuation with params', {
-      imageUrl,
-      scriptLen: script.trim().length,
+    log('input accepted', {
+      scriptLength: script.length,
       hasPrev: !!previousSegment,
-      maintainEnergy: !!maintainEnergy,
-      product,
+      jsonFormat,
     });
 
-    // ---- Generate continuation segment ----
-    const segment = await OpenAIService.generateContinuationSegment({
-      imageUrl,
-      script: script.trim(),
+    // 1) load template & base descriptions (same base as Standard)
+    const template = await OpenAIService.loadTemplate(jsonFormat);
+    const baseDescriptions = await OpenAIService.generateBaseDescriptions(
+      {
+        ageRange,
+        gender,
+        product,
+        room,
+        style,
+        jsonFormat,
+        settingMode,
+        locations,
+        cameraStyle,
+        timeOfDay,
+        backgroundLife,
+        productStyle,
+        energyArc,
+        narrativeStyle,
+      },
+      template
+    );
+
+    // 2) call continuation generator (one segment)
+    const segment = await OpenAIService.generateContinuationStyleSegment({
+      segmentNumber: 1,
+      totalSegments: 1,
+      scriptPart: script.trim(),
+      product,
+      template,
+      baseDescriptions,
+      currentLocation: settingMode === 'single' ? room : (locations[0] || room),
+      previousLocation: null,
+      nextLocation: null,
       voiceProfile,
-      previousSegment: previousSegment || null,
-      maintainEnergy: !!maintainEnergy,
-      product,
-
-      // pass-through (non-breaking)
-      ageRange,
-      gender,
-      style,
-      cameraStyle,
-      timeOfDay,
-      backgroundLife,
-    });
-
-    log('Success');
-
-    if (res.headersSent) {
-      console.warn(
-        `[Continuation:${requestId}] Response already sent; skipping success body.`
-      );
-      return;
-    }
-
-    return res.json({
-      success: true,
-      segment,
-      requestId,
-    });
-  } catch (error) {
-    console.error(`[Continuation:${requestId}] Error`, {
-      message: error?.message,
-      stack: error?.stack,
-      response: error?.response?.data,
+      energyArc,
     });
 
     if (res.headersSent) {
-      console.error(
-        `[Continuation:${requestId}] Response already sent; skipping error body.`
-      );
+      log('response already sent; skipping success send');
       return;
     }
-
-    const isTimeout = typeof error?.message === 'string' && error.message.endsWith('_timeout');
-    return res.status(isTimeout ? 504 : 500).json({
-      error: 'Failed to generate continuation',
-      message: isTimeout ? 'openai_timeout' : 'internal_error',
-      requestId,
-    });
+    return res.json({ success: true, segment });
+  } catch (err) {
+    console.error('[Continuation] error:', err);
+    if (!res.headersSent) {
+      const code = err?.message?.endsWith('_timeout') ? 504 : 500;
+      return res.status(code).json({ error: 'Failed to generate continuation', message: err.message });
+    }
   }
 });
 
 export default router;
-
-// -------- helpers --------
-function cryptoRandomId() {
-  // Small, dependency-free request id (good enough for logs)
-  return Math.random().toString(36).slice(2, 10);
-}

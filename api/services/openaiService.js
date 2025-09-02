@@ -5,7 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const __dirname  = path.dirname(__filename);
 
 // -------------------------------
 // Utility: withTimeout(labelled)
@@ -22,9 +22,15 @@ const withTimeout = (promise, ms, label = 'op') =>
 // Config: timeouts & concurrency
 // -------------------------------
 const OPENAI_CALL_TIMEOUT =
-  Number.parseInt(process.env.OPENAI_TIMEOUT_MS || '', 10) || 60_000; // 60s default
+  Number.parseInt(process.env.OPENAI_TIMEOUT_MS || '', 10) || 60_000; // default 60s
 
-const SEGMENT_CONCURRENCY = 2; // keep pressure low to avoid guard timeouts
+const OPENAI_RETRIES =
+  Number.parseInt(process.env.OPENAI_RETRIES || '', 10) || 1; // default 1 retry
+
+const OPENAI_SEGMENT_MODEL =
+  process.env.OPENAI_SEGMENT_MODEL || 'gpt-4o-mini'; // faster for segments
+
+const SEGMENT_CONCURRENCY = 2; // keep pressure low
 
 // simple map with concurrency control
 async function mapWithConcurrency(items, concurrency, worker) {
@@ -52,22 +58,50 @@ async function mapWithConcurrency(items, concurrency, worker) {
 }
 
 // -------------------------------
+// Retry helper with exponential backoff
+// -------------------------------
+async function callOpenAIWithRetry(fn, label) {
+  let attempt = 0;
+  let delay = 1000; // 1s, then 2s, 4s...
+  const tries = 1 + OPENAI_RETRIES;
+
+  while (attempt < tries) {
+    try {
+      return await fn();
+    } catch (err) {
+      attempt++;
+      const isTimeout =
+        err?.message?.endsWith('_timeout') ||
+        /timeout/i.test(String(err?.message || ''));
+
+      if (attempt >= tries) throw err;
+
+      // back off only for timeouts / rate / transient errors
+      if (isTimeout || String(err?.message || '').match(/rate|overloaded|temporar/i)) {
+        console.warn(`[OpenAI][retry] ${label} attempt ${attempt} failed (${err.message}); backing off ${delay}ms`);
+        await new Promise((r) => setTimeout(r, delay));
+        delay *= 2;
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
+// -------------------------------
 // JSON repair helpers
 // -------------------------------
 function sliceToOuterBraces(str) {
   const first = str.indexOf('{');
-  const last = str.lastIndexOf('}');
+  const last  = str.lastIndexOf('}');
   if (first === -1 || last === -1 || last <= first) return str;
   return str.slice(first, last + 1);
 }
 
 function basicJsonCleanup(str) {
-  // normalize newlines & remove code fences / nulls
   let s = (str || '').replace(/\r/g, '').replace(/\u0000/g, '');
   s = s.replace(/```(?:json)?/gi, '').replace(/```/g, '');
-  // remove trailing commas before } or ]
   s = s.replace(/,\s*([}\]])/g, '$1');
-  // keep the outermost object
   s = sliceToOuterBraces(s);
   return s.trim();
 }
@@ -125,6 +159,7 @@ class OpenAIService {
   }
 
   async loadTemplate(format = 'standard') {
+    // Map formats to filenames (extend here if you add more)
     const filename =
       format === 'enhanced'
         ? 'veo3-enhanced-continuity.md'
@@ -136,6 +171,9 @@ class OpenAIService {
     return await fs.readFile(templatePath, 'utf8');
   }
 
+  // ---------------------------
+  // STANDARD / PLUS generation
+  // ---------------------------
   async generateSegments(params) {
     console.log(
       '[OpenAI] Starting generation with format:',
@@ -148,20 +186,19 @@ class OpenAIService {
     // Step 1: Analyze and split script
     let scriptSegments = await this.splitScript(params.script);
 
-    // Optional cap from route/body for debugging/short runs
+    // Optional cap (debugging)
     if (params?.maxSegments && Number.isFinite(+params.maxSegments)) {
       scriptSegments = scriptSegments.slice(0, +params.maxSegments);
     }
 
     console.log('[OpenAI] Script split into', scriptSegments.length, 'segments');
 
-    // Step 1b: decide strategy based on job size (safe defaults for long scripts)
+    // Strategy based on size
     const autoSequential =
       params.sequential === undefined ? scriptSegments.length >= 8 : !!params.sequential;
-
     const effectiveConcurrency = autoSequential ? 1 : SEGMENT_CONCURRENCY;
 
-    // Prepare location data mapped to segments length
+    // Locations
     let locations = [];
     if (params.settingMode === 'single') {
       locations = Array(scriptSegments.length).fill(params.room);
@@ -174,9 +211,13 @@ class OpenAIService {
 
     // Step 2: Base descriptions
     console.log('[OpenAI] Generating base descriptions...');
-    const baseDescriptions = await withTimeout(
-      this.generateBaseDescriptions(params, template),
-      OPENAI_CALL_TIMEOUT,
+    const baseDescriptions = await callOpenAIWithRetry(
+      () =>
+        withTimeout(
+          this.generateBaseDescriptions(params, template),
+          OPENAI_CALL_TIMEOUT,
+          'openai_base'
+        ),
       'openai_base'
     );
     console.log('[OpenAI] Base descriptions generated');
@@ -189,20 +230,24 @@ class OpenAIService {
     const makeSegment = async (scriptPart, i, previousSegment) => {
       const idx = i + 1;
       console.log(`[OpenAI] Generating segment ${idx}/${scriptSegments.length}`);
-      const seg = await withTimeout(
-        this.generateSegment({
-          segmentNumber: idx,
-          totalSegments: scriptSegments.length,
-          scriptPart,
-          baseDescriptions,
-          previousSegment, // null in concurrent mode
-          template,
-          currentLocation: locations[i],
-          previousLocation: i > 0 ? locations[i - 1] : null,
-          nextLocation: i < locations.length - 1 ? locations[i + 1] : null,
-          ...params,
-        }),
-        OPENAI_CALL_TIMEOUT,
+      const seg = await callOpenAIWithRetry(
+        () =>
+          withTimeout(
+            this.generateSegment({
+              segmentNumber: idx,
+              totalSegments: scriptSegments.length,
+              scriptPart,
+              baseDescriptions,
+              previousSegment,
+              template,
+              currentLocation: locations[i],
+              previousLocation: i > 0 ? locations[i - 1] : null,
+              nextLocation: i < locations.length - 1 ? locations[i + 1] : null,
+              ...params,
+            }),
+            OPENAI_CALL_TIMEOUT,
+            `openai_segment_${idx}`
+          ),
         `openai_segment_${idx}`
       );
       return seg;
@@ -212,21 +257,16 @@ class OpenAIService {
     let segments;
 
     if (autoSequential) {
-      // Sequential mode: preserve previousSegment continuity
       segments = [];
       for (let i = 0; i < scriptSegments.length; i++) {
         const prev = i > 0 ? segments[i - 1] : null;
         segments.push(await makeSegment(scriptSegments[i], i, prev));
       }
     } else {
-      // Concurrent mode: never read from segments[] inside the worker
       segments = await mapWithConcurrency(
         scriptSegments,
         effectiveConcurrency,
-        async (scriptPart, i) => {
-          // NO reference to segments[i-1] here
-          return await makeSegment(scriptPart, i, null);
-        }
+        async (scriptPart, i) => makeSegment(scriptPart, i, null)
       );
     }
 
@@ -241,77 +281,74 @@ class OpenAIService {
   }
 
   async splitScript(script) {
-    const wordsPerSecond = 150 / 60; // 2.5 wps
-    const minWordsFor6Seconds = 15;
-    const targetWordsFor8Seconds = 20;
-    const maxWordsFor8Seconds = 22;
+    const wordsPerSecond       = 150 / 60; // 2.5 wps
+    const minWordsFor6Seconds  = 15;
+    const targetWordsFor8Sec   = 20;
+    const maxWordsFor8Seconds  = 22;
 
     console.log('[OpenAI] Script splitting parameters:', {
-      minWords: minWordsFor6Seconds,
-      targetWords: targetWordsFor8Seconds,
-      maxWords: maxWordsFor8Seconds,
+      minWords:  minWordsFor6Seconds,
+      targetWords: targetWordsFor8Sec,
+      maxWords:  maxWordsFor8Seconds,
     });
 
-    const sentences = script.match(/[^.!?]+[.!?]+/g) || [script];
-    const rawSegments = [];
-    let currentSegment = '';
+    const sentences     = script.match(/[^.!?]+[.!?]+/g) || [script];
+    const rawSegments   = [];
+    let currentSegment  = '';
     let currentWordCount = 0;
 
     for (let i = 0; i < sentences.length; i++) {
-      const sentence = sentences[i].trim();
+      const sentence      = sentences[i].trim();
       const sentenceWords = sentence.split(/\s+/).length;
 
       if (currentSegment === '') {
-        currentSegment = sentence;
+        currentSegment   = sentence;
         currentWordCount = sentenceWords;
 
         while (currentWordCount < minWordsFor6Seconds && i + 1 < sentences.length) {
           i++;
           const nextSentence = sentences[i].trim();
-          const nextWords = nextSentence.split(/\s+/).length;
+          const nextWords    = nextSentence.split(/\s+/).length;
 
           if (currentWordCount + nextWords > maxWordsFor8Seconds) {
             if (currentWordCount < minWordsFor6Seconds) {
-              currentSegment += ' ' + nextSentence;
+              currentSegment   += ' ' + nextSentence;
               currentWordCount += nextWords;
             } else {
               i--;
               break;
             }
           } else {
-            currentSegment += ' ' + nextSentence;
+            currentSegment   += ' ' + nextSentence;
             currentWordCount += nextWords;
           }
         }
 
         rawSegments.push(currentSegment);
-        currentSegment = '';
+        currentSegment   = '';
         currentWordCount = 0;
       }
     }
 
     const finalSegments = [];
     for (let i = 0; i < rawSegments.length; i++) {
-      const segment = rawSegments[i];
+      const segment   = rawSegments[i];
       const wordCount = segment.split(/\s+/).length;
-      const duration = wordCount / wordsPerSecond;
+      const duration  = wordCount / wordsPerSecond;
 
       console.log(
-        `[OpenAI] Raw segment ${i + 1}: ${wordCount} words, ~${duration.toFixed(
-          1
-        )}s speaking time`
+        `[OpenAI] Raw segment ${i + 1}: ${wordCount} words, ~${duration.toFixed(1)}s speaking time`
       );
 
       if (wordCount < minWordsFor6Seconds && i < rawSegments.length - 1) {
         const nextSegment = rawSegments[i + 1];
-        const nextWords = nextSegment.split(/\s+/).length;
+        const nextWords   = nextSegment.split(/\s+/).length;
 
         if (nextWords > minWordsFor6Seconds) {
-          const nextSentences =
-            nextSegment.match(/[^.!?]+[.!?]+/g) || [nextSegment];
+          const nextSentences   = nextSegment.match(/[^.!?]+[.!?]+/g) || [nextSegment];
           if (nextSentences.length > 1) {
             const borrowedSentence = nextSentences[0];
-            const borrowedWords = borrowedSentence.split(/\s+/).length;
+            const borrowedWords    = borrowedSentence.split(/\s+/).length;
 
             if (wordCount + borrowedWords <= maxWordsFor8Seconds) {
               finalSegments.push(segment + ' ' + borrowedSentence);
@@ -322,7 +359,7 @@ class OpenAIService {
         }
 
         if (i < rawSegments.length - 1) {
-          const merged = segment + ' ' + rawSegments[i + 1];
+          const merged     = segment + ' ' + rawSegments[i + 1];
           const mergedWords = merged.split(/\s+/).length;
 
           if (mergedWords <= 30) {
@@ -339,7 +376,7 @@ class OpenAIService {
     console.log('[OpenAI] Final segment distribution:');
     finalSegments.forEach((segment, i) => {
       const wordCount = segment.split(/\s+/).length;
-      const duration = wordCount / wordsPerSecond;
+      const duration  = wordCount / wordsPerSecond;
       console.log(
         `  Segment ${i + 1}: ${wordCount} words, ~${duration.toFixed(1)}s speaking time`
       );
@@ -356,11 +393,14 @@ class OpenAIService {
     try {
       const response = await withTimeout(
         this.openai.chat.completions.create({
-          model: 'gpt-4o',
+          model: 'gpt-4o', // keep quality high for the big block
           messages: [
             {
               role: 'system',
-              content: `${template}\n\nGenerate the base descriptions that will remain IDENTICAL across all segments. Follow the exact word count requirements. Return ONLY valid JSON.`,
+              content:
+                `${template}\n\n` +
+                `Generate the base descriptions that will remain IDENTICAL across all segments. ` +
+                `Follow the exact word count requirements. Return ONLY valid JSON.`,
             },
             {
               role: 'user',
@@ -414,11 +454,14 @@ Return a JSON object with these exact keys:
     try {
       const response = await withTimeout(
         this.openai.chat.completions.create({
-          model: 'gpt-4o',
+          model: OPENAI_SEGMENT_MODEL, // faster model here
           messages: [
             {
               role: 'system',
-              content: `${params.template}\n\nGenerate a Veo 3 JSON segment following the exact structure. Use the provided base descriptions WORD-FOR-WORD.`,
+              content:
+                `${params.template}\n\n` +
+                `Generate a Veo 3 JSON segment following the exact structure. ` +
+                `Use the provided base descriptions WORD-FOR-WORD.`,
             },
             {
               role: 'user',
@@ -470,25 +513,36 @@ Position: ${params.previousSegment.action_timeline?.transition_prep || params.pr
   }
 
   generateCharacterId(params) {
-    return `${(params.avatarMode === 'animal' ? params.animal?.species : 'human')}_${params.gender || 'N/A'}_${params.ageRange || 'N/A'}_${Date.now()}`.replace(
-      /\s+/g,
-      '_'
-    );
+    return `${(params.avatarMode === 'animal' ? params.animal?.species : 'human')}_${params.gender || 'N/A'}_${params.ageRange || 'N/A'}_${Date.now()}`.replace(/\s+/g, '_');
   }
 
-  // -------------------------------
-  // Continuation-style segment (same schema, voice-focused)
-  // -------------------------------
+  // ---------------------------------
+  // CONTINUATION-style segment (Plus)
+  // ---------------------------------
   async generateContinuationStyleSegment(params) {
-    const template = await this.loadTemplate(params.jsonFormat || 'standard');
+    // Use provided template if caller already loaded it; otherwise load once here
+    const template = params.template || (await this.loadTemplate(params.jsonFormat || 'standard'));
+
     try {
+      // Ensure continuation always has baseDescriptions
+      const base =
+        params.baseDescriptions ||
+        (await withTimeout(
+          this.generateBaseDescriptions(params, template),
+          OPENAI_CALL_TIMEOUT,
+          'openai_base_for_continuation'
+        ));
+
       const response = await withTimeout(
         this.openai.chat.completions.create({
-          model: 'gpt-4o',
+          model: OPENAI_SEGMENT_MODEL, // faster per-segment model
           messages: [
             {
               role: 'system',
-              content: `${template}\n\nGenerate a segment that maintains the EXACT same structure as standard segments, but with ENHANCED voice and behavior sections.`,
+              content:
+                `${template}\n\n` +
+                `Generate a segment that maintains the EXACT same structure as standard segments, ` +
+                `but with ENHANCED voice and behavior sections. Return ONLY valid JSON.`,
             },
             {
               role: 'user',
@@ -500,12 +554,18 @@ Current Location: ${params.currentLocation}
 ${params.previousLocation && params.previousLocation !== params.currentLocation ? `Character just moved from: ${params.previousLocation}` : ''}
 ${params.nextLocation && params.nextLocation !== params.currentLocation ? `Character will move to: ${params.nextLocation}` : ''}
 
+Visual Settings:
+- Camera Style: ${params.cameraStyle || 'static-handheld'}
+- Time of Day: ${params.timeOfDay || 'morning'}
+- Background Life: ${params.backgroundLife ? 'Include subtle background activity' : 'Focus only on character'}
+- Energy Level: ${this.getEnergyLevel(params.energyArc, params.segmentNumber, params.totalSegments)}
+
 Base Descriptions (USE EXACTLY AS PROVIDED):
-Physical: ${params.baseDescriptions.physical}
-Clothing: ${params.baseDescriptions.clothing}
-Base Voice: ${params.baseDescriptions.voice}
-General Environment: ${params.baseDescriptions.environment}
-Product Handling: ${params.baseDescriptions.productHandling || 'Natural handling'}
+Physical: ${base.physical}
+Clothing: ${base.clothing}
+Base Voice: ${base.voice}
+General Environment: ${base.environment}
+Product Handling: ${base.productHandling || 'Natural handling'}
 
 Voice Profile to Maintain:
 ${JSON.stringify(params.voiceProfile || {}, null, 2)}
@@ -533,64 +593,6 @@ ${JSON.stringify(params.voiceProfile || {}, null, 2)}
     }
   }
 
-  // -------------------------------
-  // Continuation (image+voice minimal schema)
-  // -------------------------------
-  async generateContinuationSegment(params) {
-    const templatePath = path.join(
-      __dirname,
-      '../../instructions/veo3-continuation-minimal.md'
-    );
-    const template = await fs.readFile(templatePath, 'utf8');
-
-    try {
-      const response = await withTimeout(
-        this.openai.chat.completions.create({
-          model: 'gpt-4o',
-          messages: [
-            {
-              role: 'system',
-              content: `${template}\n\nGenerate a continuation segment with MINIMAL description but DETAILED voice/behavior continuity. Return ONLY JSON.`,
-            },
-            {
-              role: 'user',
-              content: `Create a continuation segment:
-
-Image Context: Character from screenshot at ${params.imageUrl}
-Previous Dialogue: "${params.previousSegment?.action_timeline?.dialogue || 'N/A'}"
-New Dialogue: "${params.script}"
-Product: ${params.product}
-Maintain Energy: ${params.maintainEnergy ? 'Yes' : 'No'}
-
-Voice Profile to Match EXACTLY:
-${JSON.stringify(params.voiceProfile || {}, null, 2)}
-`,
-            },
-          ],
-          response_format: { type: 'json_object' },
-          temperature: 0.4,
-          max_tokens: 2500,
-        }),
-        OPENAI_CALL_TIMEOUT,
-        'openai_continuation_minimal'
-      );
-
-      const raw = response.choices?.[0]?.message?.content || '';
-      let parsed = safeParseJSON(raw);
-      if (!parsed.ok) {
-        console.warn('[OpenAI] Continuation JSON parse failed — attempting repair');
-        parsed = { ok: true, value: await repairJSONWithModel(this.openai, raw, 2500) };
-      }
-      return parsed.value;
-    } catch (error) {
-      console.error('[OpenAI] Error in generateContinuationSegment:', error);
-      throw error;
-    }
-  }
-
-  // -------------------------------
-  // Voice profile extraction (JSON only)
-  // -------------------------------
   async extractDetailedVoiceProfile(segment, params) {
     console.log('[OpenAI] Extracting detailed voice profile');
     try {
@@ -642,7 +644,7 @@ Return:
       return parsed.value;
     } catch (error) {
       console.error('[OpenAI] Error enhancing voice profile:', error);
-      // don’t throw here; allow pipeline to continue without enhanced profile
+      // non-fatal fallback
       return {
         pitchRange: '165-185 Hz',
         speakingRate: '145-150 wpm',
@@ -658,95 +660,6 @@ Return:
         vocalTexture: 'smooth',
       };
     }
-  }
-
-  // -------------------------------
-  // Full pipeline with voice profile (standard + continuity)
-  // -------------------------------
-  async generateSegmentsWithVoiceProfile(params) {
-    // Always run sequentially for continuity
-    const template = await this.loadTemplate('enhanced');
-
-    // Split and optionally cap
-    let scriptSegments = await this.splitScript(params.script);
-    if (params?.maxSegments && Number.isFinite(+params.maxSegments)) {
-      scriptSegments = scriptSegments.slice(0, +params.maxSegments);
-    }
-
-    // Locations
-    let locations = [];
-    if (params.settingMode === 'single') {
-      locations = Array(scriptSegments.length).fill(params.room);
-    } else {
-      const src = params.locations || [];
-      locations = Array.from({ length: scriptSegments.length }, (_, i) => {
-        return src[i] ?? src[src.length - 1] ?? 'living room';
-      });
-    }
-
-    // Base descriptions (enhanced)
-    const baseDescriptions = await withTimeout(
-      this.generateBaseDescriptions({ ...params, jsonFormat: 'enhanced' }, template),
-      OPENAI_CALL_TIMEOUT,
-      'openai_voice_base'
-    );
-
-    // First segment (enhanced) to seed voice
-    const firstSegment = await withTimeout(
-      this.generateSegment({
-        segmentNumber: 1,
-        totalSegments: scriptSegments.length,
-        scriptPart: scriptSegments[0],
-        baseDescriptions,
-        previousSegment: null,
-        template,
-        currentLocation: locations[0],
-        previousLocation: null,
-        nextLocation: locations.length > 1 ? locations[1] : null,
-        ...params,
-        jsonFormat: 'enhanced',
-      }),
-      OPENAI_CALL_TIMEOUT,
-      'openai_voice_first'
-    );
-
-    // Extract voice profile
-    const voiceProfile = await this.extractDetailedVoiceProfile(firstSegment, {
-      ...params,
-      script: params.script,
-    });
-
-    // Remaining segments (sequential, continuation-style)
-    const segments = [firstSegment];
-    for (let i = 1; i < scriptSegments.length; i++) {
-      const seg = await withTimeout(
-        this.generateContinuationStyleSegment({
-          segmentNumber: i + 1,
-          totalSegments: scriptSegments.length,
-          scriptPart: scriptSegments[i],
-          baseDescriptions,
-          previousSegment: segments[i - 1],
-          voiceProfile,
-          currentLocation: locations[i],
-          previousLocation: i > 0 ? locations[i - 1] : null,
-          nextLocation: i < locations.length - 1 ? locations[i + 1] : null,
-          ...params,
-        }),
-        OPENAI_CALL_TIMEOUT,
-        `openai_voice_segment_${i + 1}`
-      );
-      segments.push(seg);
-    }
-
-    return {
-      segments,
-      metadata: {
-        totalSegments: segments.length,
-        estimatedDuration: segments.length * 8,
-        characterId: this.generateCharacterId(params),
-      },
-      voiceProfile,
-    };
   }
 
   getEnergyLevel(energyArc, segmentNumber, totalSegments) {

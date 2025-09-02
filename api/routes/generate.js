@@ -1,3 +1,4 @@
+// api/routes/generate.js
 import express from 'express';
 import rateLimit from 'express-rate-limit';
 import OpenAIService from '../services/openaiService.js';
@@ -8,12 +9,12 @@ const router = express.Router();
 
 // Rate limiting (proxy-friendly)
 const limiter = rateLimit({
-  windowMs: 60 * 1000,         // 1 minute
-  max: 10,                     // 10 req/min/ip
+  windowMs: Number(process.env.RATE_LIMIT_WINDOW_MS || 60_000),
+  max: Number(process.env.RATE_LIMIT_MAX_REQUESTS || 10),
   standardHeaders: true,
   legacyHeaders: false,
-  validate: { xForwardedForHeader: false }, // avoid strict XFF check on Render
-  keyGenerator: (req) => req.ip,            // uses trust proxy
+  validate: { xForwardedForHeader: false },
+  keyGenerator: (req) => req.ip,
 });
 router.use(limiter);
 
@@ -27,17 +28,19 @@ router.post('/generate', async (req, res) => {
 
   log('Request received:', {
     bodyKeys: Object.keys(req.body),
-    scriptLength: req.body.script?.length || 0
+    scriptLength: req.body.script?.length || 0,
   });
 
   try {
-    const { 
-      script, 
-      ageRange, 
-      gender, 
-      product, 
-      room, 
-      style, 
+    const {
+      // core
+      script,
+      ageRange,
+      gender,
+      product,
+      room,
+      style,
+      // knobs
       jsonFormat = 'standard',
       continuationMode = false,
       voiceType,
@@ -50,21 +53,19 @@ router.post('/generate', async (req, res) => {
       productStyle,
       energyArc,
       narrativeStyle,
+      // advanced character details
       ethnicity,
       characterFeatures,
       clothingDetails,
       accentRegion,
-      // NEW: control runtime behavior
-      maxSegments,
-      sequential
+      // optional run controls
+      maxSegments = null,
+      sequential = null,
     } = req.body;
 
-    // Validation
     if (!script || script.trim().length < 50) {
-      log('Validation failed: Script too short');
-      return res.status(400).json({ 
-        error: 'Script must be at least 50 characters long' 
-      });
+      log('Validation failed: script too short');
+      return res.status(400).json({ error: 'Script must be at least 50 characters long' });
     }
 
     log('Starting OpenAI generation with:', {
@@ -77,10 +78,11 @@ router.post('/generate', async (req, res) => {
       continuationMode,
       settingMode,
       scriptWords: script.trim().split(/\s+/).length,
-      maxSegments: maxSegments ?? null,
-      sequential: sequential ?? null
+      maxSegments,
+      sequential,
     });
 
+    // Shared params object
     const params = {
       script: script.trim(),
       ageRange,
@@ -104,48 +106,103 @@ router.post('/generate', async (req, res) => {
       clothingDetails,
       accentRegion,
       maxSegments,
-      sequential
+      sequential,
     };
 
-    const result = continuationMode 
-      ? await OpenAIService.generateContinuationStyleSegment(params) // or your voice-profile variant if you add it
-      : await OpenAIService.generateSegments(params);
+    // -------- Continuation Mode --------
+    if (continuationMode) {
+      // 1) split script up-front (so we can run strictly sequential)
+      let scriptSegments = await OpenAIService.splitScript(params.script);
+      if (maxSegments && Number.isFinite(+maxSegments)) {
+        scriptSegments = scriptSegments.slice(0, +maxSegments);
+      }
+
+      // 2) load template + generate base once (pass down to each segment)
+      const template = await OpenAIService.loadTemplate(jsonFormat);
+      const baseDescriptions = await OpenAIService.generateBaseDescriptions(params, template);
+
+      // 3) derive locations of same length
+      let locs = [];
+      if (settingMode === 'single') {
+        locs = Array(scriptSegments.length).fill(room);
+      } else {
+        const src = locations || [];
+        locs = Array.from({ length: scriptSegments.length }, (_, i) => {
+          return src[i] ?? src[src.length - 1] ?? 'living room';
+        });
+      }
+
+      // 4) sequentially build segments so we can pass previousSegment
+      const segments = [];
+      for (let i = 0; i < scriptSegments.length; i++) {
+        const seg = await OpenAIService.generateContinuationStyleSegment({
+          segmentNumber: i + 1,
+          totalSegments: scriptSegments.length,
+          scriptPart: scriptSegments[i],
+          baseDescriptions,            // <— reuse!
+          template,
+          currentLocation: locs[i],
+          previousLocation: i > 0 ? locs[i - 1] : null,
+          nextLocation: i < locs.length - 1 ? locs[i + 1] : null,
+          previousSegment: i > 0 ? segments[i - 1] : null,
+          ...params,
+        });
+        segments.push(seg);
+      }
+
+      const responsePayload = {
+        success: true,
+        segments,
+        metadata: {
+          totalSegments: segments.length,
+          estimatedDuration: segments.length * 8,
+          characterId: OpenAIService.generateCharacterId(params),
+          mode: 'continuation',
+        },
+        voiceProfile: null, // could be added later via extractDetailedVoiceProfile
+      };
+
+      if (res.headersSent) {
+        log('response already sent; skipping success send');
+        return;
+      }
+      return res.json(responsePayload);
+    }
+
+    // -------- Standard Generation --------
+    const result = await OpenAIService.generateSegments(params);
 
     log('Success:', {
       segments: result.segments.length,
       characterId: result.metadata.characterId,
-      hasVoiceProfile: !!result.voiceProfile
+      hasVoiceProfile: !!result.voiceProfile,
     });
 
     if (res.headersSent) {
-      console.warn('[Generate] Response already sent (likely guard timeout). Skipping success send.');
+      log('response already sent; skipping success send');
       return;
     }
-
     return res.json({
       success: true,
       segments: result.segments,
       metadata: result.metadata,
-      voiceProfile: result.voiceProfile
+      voiceProfile: result.voiceProfile,
     });
-
-  } catch (error) {
-    console.error(`[Generate:${cryptoRandomId()}] Error:`, {
-      message: error.message,
-      stack: error.stack,
-      response: error.response?.data
+  } catch (err) {
+    log('Error:', {
+      message: err.message,
+      stack: err.stack,
+      response: err.response?.data,
     });
-
     if (res.headersSent) {
-      console.error('[Generate] Response already sent; skipping error response');
+      log('response already sent; skipping error send');
       return;
     }
-
-    const code = error.message?.endsWith('_timeout') ? 504 : 500;
-    return res.status(code).json({ 
+    const code = err.message?.endsWith('_timeout') ? 504 : 500;
+    return res.status(code).json({
       error: 'Failed to generate segments',
-      message: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error',
-      details: process.env.NODE_ENV === 'development' ? error.response?.data : undefined
+      message: process.env.NODE_ENV === 'development' ? err.message : 'Internal server error',
+      details: process.env.NODE_ENV === 'development' ? err.response?.data : undefined,
     });
   }
 });
@@ -163,9 +220,9 @@ router.post('/download', async (req, res) => {
     const archive = archiver('zip', { zlib: { level: 9 } });
     archive.pipe(res);
 
-    segments.forEach((segment, index) => {
+    (segments || []).forEach((segment, index) => {
       archive.append(JSON.stringify(segment, null, 2), {
-        name: `segment_${(index + 1).toString().padStart(2, '0')}.json`
+        name: `segment_${(index + 1).toString().padStart(2, '0')}.json`,
       });
     });
 
@@ -186,7 +243,11 @@ router.post('/download', async (req, res) => {
 // Generate videos from segments
 // ============================
 router.post('/generate-videos', async (req, res) => {
-  console.log('[Generate Videos] Request received');
+  const requestId = cryptoRandomId();
+  const log = (msg, extra = {}) =>
+    console.log(`[GenerateVideos:${requestId}] ${msg}`, extra);
+
+  log('Request received');
 
   try {
     const { segments } = req.body;
@@ -194,16 +255,16 @@ router.post('/generate-videos', async (req, res) => {
       return res.status(400).json({ error: 'No segments provided for video generation' });
     }
 
-    console.log(`[Generate Videos] Processing ${segments.length} segments`);
+    log(`Processing ${segments.length} segments`);
     const result = await Veo3Service.generateVideosForAllSegments(segments);
 
-    console.log('[Generate Videos] Success:', {
+    log('Success:', {
       totalVideos: result.videos.length,
-      status: result.videos[0]?.status
+      status: result.videos[0]?.status,
     });
 
     if (res.headersSent) {
-      console.warn('[Generate Videos] Response already sent. Skipping success send.');
+      log('response already sent; skipping success send');
       return;
     }
 
@@ -211,22 +272,26 @@ router.post('/generate-videos', async (req, res) => {
       success: true,
       videos: result.videos,
       service: 'gemini',
-      message: result.message || 'Video generation initiated successfully'
+      message: result.message || 'Video generation initiated successfully',
     });
-
   } catch (error) {
     console.error('[Generate Videos] Error:', error);
     if (res.headersSent) return;
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Failed to generate videos',
-      message: error.message
+      message: error.message,
     });
   }
 });
 
 export default router;
 
-// tiny helper
+// small helper
 function cryptoRandomId() {
-  return Math.random().toString(36).slice(2) + '-' + Date.now().toString(36);
+  // avoid Node:crypto import just for an id
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
 }

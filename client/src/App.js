@@ -14,7 +14,6 @@ import ResultsDisplayPlus from './components/ResultsDisplayPlus';
 import DownloadButtonPlus from './components/DownloadButtonPlus';
 import VideoGeneratorPlus from './components/VideoGeneratorPlus';
 import { generateSegmentsPlus } from './api/clientPlus';
-import NewContinuationMode from './components/NewContinuationMode';
 
 function App() {
   useEffect(() => {
@@ -23,7 +22,7 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState(null);
   const [error, setError] = useState(null);
-  const [activeTab, setActiveTab] = useState('standard'); // standard | continuation | standard-plus | new-cont
+  const [activeTab, setActiveTab] = useState('standard'); // standard | continuation | standard-plus
   const [showSegmentManager, setShowSegmentManager] = useState(false);
   const [showBulkOperations, setShowBulkOperations] = useState(false);
 
@@ -89,12 +88,6 @@ function App() {
             onClick={() => setActiveTab('standard-plus')}
           >
             Standard Plus
-          </button>
-          <button 
-            className={`tab-button ${activeTab === 'new-cont' ? 'active' : ''}`}
-            onClick={() => setActiveTab('new-cont')}
-          >
-            New Cont. Mode
           </button>
         </div>
 
@@ -180,9 +173,7 @@ function App() {
               </>
             )}
           </>
-        ) : (
-          <NewContinuationMode />
-        )}
+        ) : null}
       </main>
       </div>
     </ErrorBoundary>
