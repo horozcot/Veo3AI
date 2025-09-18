@@ -5,11 +5,18 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
-const __dirname  = path.dirname(__filename);
+const __dirname = path.dirname(__filename);
 
-// -------------------------------
-// Utility: withTimeout(labelled)
-// -------------------------------
+// ---------- timeouts / concurrency ----------
+const OPENAI_CALL_TIMEOUT =
+  Number.parseInt(process.env.OPENAI_TIMEOUT_MS || '', 10) || 120_000;
+const OPENAI_RETRIES =
+  Number.parseInt(process.env.OPENAI_RETRIES || '', 10) || 2;
+const OPENAI_SEGMENT_MODEL =
+  process.env.OPENAI_SEGMENT_MODEL || 'gpt-4o-mini';
+const SEGMENT_CONCURRENCY = 2;
+
+// ---------- tiny helpers ----------
 const withTimeout = (promise, ms, label = 'op') =>
   Promise.race([
     promise,
@@ -18,26 +25,9 @@ const withTimeout = (promise, ms, label = 'op') =>
     ),
   ]);
 
-// -------------------------------
-// Config: timeouts & concurrency
-// -------------------------------
-const OPENAI_CALL_TIMEOUT =
-  Number.parseInt(process.env.OPENAI_TIMEOUT_MS || '', 10) || 60_000; // default 60s
-
-const OPENAI_RETRIES =
-  Number.parseInt(process.env.OPENAI_RETRIES || '', 10) || 1; // default 1 retry
-
-const OPENAI_SEGMENT_MODEL =
-  process.env.OPENAI_SEGMENT_MODEL || 'gpt-4o-mini'; // faster for segments
-
-const SEGMENT_CONCURRENCY = 2; // keep pressure low
-
-// simple map with concurrency control
 async function mapWithConcurrency(items, concurrency, worker) {
   const results = new Array(items.length);
-  let index = 0;
-  let active = 0;
-
+  let index = 0, active = 0;
   return await new Promise((resolve, reject) => {
     const next = () => {
       if (index >= items.length && active === 0) return resolve(results);
@@ -45,194 +35,127 @@ async function mapWithConcurrency(items, concurrency, worker) {
         const i = index++;
         active++;
         Promise.resolve(worker(items[i], i))
-          .then((r) => {
-            results[i] = r;
-            active--;
-            next();
-          })
-          .catch((e) => reject(e));
+          .then((r) => { results[i] = r; active--; next(); })
+          .catch(reject);
       }
     };
     next();
   });
 }
 
-// -------------------------------
-// Retry helper with exponential backoff
-// -------------------------------
 async function callOpenAIWithRetry(fn, label) {
-  let attempt = 0;
-  let delay = 1000; // 1s, then 2s, 4s...
+  let attempt = 0, delay = 1000;
   const tries = 1 + OPENAI_RETRIES;
-
   while (attempt < tries) {
-    try {
-      return await fn();
-    } catch (err) {
+    try { return await fn(); }
+    catch (err) {
       attempt++;
-      const isTimeout =
-        err?.message?.endsWith('_timeout') ||
-        /timeout/i.test(String(err?.message || ''));
-
-      if (attempt >= tries) throw err;
-
-      // back off only for timeouts / rate / transient errors
-      if (isTimeout || String(err?.message || '').match(/rate|overloaded|temporar/i)) {
-        console.warn(`[OpenAI][retry] ${label} attempt ${attempt} failed (${err.message}); backing off ${delay}ms`);
-        await new Promise((r) => setTimeout(r, delay));
-        delay *= 2;
-        continue;
-      }
-      throw err;
+      const msg = String(err?.message || '');
+      const isTimeout = msg.endsWith('_timeout') || /timeout/i.test(msg);
+      const isTransient = /rate|overload|temporar/i.test(msg);
+      if (attempt >= tries || (!isTimeout && !isTransient)) throw err;
+      console.warn(`[OpenAI][retry] ${label} attempt ${attempt} failed (${msg}); backoff ${delay}ms`);
+      await new Promise(r => setTimeout(r, delay));
+      delay *= 2;
     }
   }
 }
 
-// -------------------------------
-// JSON repair helpers
-// -------------------------------
-function sliceToOuterBraces(str) {
-  const first = str.indexOf('{');
-  const last  = str.lastIndexOf('}');
-  if (first === -1 || last === -1 || last <= first) return str;
-  return str.slice(first, last + 1);
-}
-
-function basicJsonCleanup(str) {
-  let s = (str || '').replace(/\r/g, '').replace(/\u0000/g, '');
-  s = s.replace(/```(?:json)?/gi, '').replace(/```/g, '');
-  s = s.replace(/,\s*([}\]])/g, '$1');
-  s = sliceToOuterBraces(s);
-  return s.trim();
-}
-
-function safeParseJSON(raw) {
-  try {
-    return { ok: true, value: JSON.parse(raw) };
-  } catch {
-    try {
-      const cleaned = basicJsonCleanup(raw);
-      return { ok: true, value: JSON.parse(cleaned) };
-    } catch (e2) {
-      return { ok: false, error: e2, raw };
-    }
-  }
-}
-
-async function repairJSONWithModel(openai, raw, maxTokens = 3000) {
+// ---------- JSON helpers ----------
+function sliceToOuterBraces(str){ const a=str.indexOf('{'),b=str.lastIndexOf('}'); return (a===-1||b===-1||b<=a)?str:str.slice(a,b+1); }
+function basicJsonCleanup(str){ let s=(str||'').replace(/\r/g,'').replace(/\u0000/g,''); s=s.replace(/```(?:json)?/gi,'').replace(/```/g,''); s=s.replace(/,\s*([}\]])/g,'$1'); return sliceToOuterBraces(s).trim(); }
+function safeParseJSON(raw){ try{ return {ok:true,value:JSON.parse(raw)}; } catch{ try{ return {ok:true,value:JSON.parse(basicJsonCleanup(raw))}; } catch(e2){ return {ok:false,error:e2,raw}; } } }
+async function repairJSONWithModel(openai, raw, maxTokens=2000){
   const repair = await withTimeout(
     openai.chat.completions.create({
       model: 'gpt-4o',
       messages: [
-        {
-          role: 'system',
-          content:
-            'You fix malformed JSON. Return ONLY valid JSON (single JSON object). No commentary before or after.',
-        },
-        {
-          role: 'user',
-          content: `Fix this into valid JSON (object only). Keep keys/values intact:\n${raw}`,
-        },
+        { role:'system', content:'Fix malformed JSON. Return ONLY one JSON object.' },
+        { role:'user', content:`Repair this into valid JSON:\n${raw}` }
       ],
-      response_format: { type: 'json_object' },
-      temperature: 0,
-      max_tokens: maxTokens,
+      response_format:{ type:'json_object' },
+      temperature:0,
+      max_tokens:maxTokens
     }),
     OPENAI_CALL_TIMEOUT,
     'openai_json_repair'
   );
-
   const repairedRaw = repair.choices?.[0]?.message?.content || '';
   const parsed = safeParseJSON(repairedRaw);
   if (!parsed.ok) throw new Error('json_repair_failed');
   return parsed.value;
 }
 
-// -------------------------------
-// Service class
-// -------------------------------
+// ======================================================
+// SERVICE
+// ======================================================
 class OpenAIService {
-  constructor() {
-    this.openai = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
-    });
-  }
+  constructor(){ this.openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY }); }
 
-  async loadTemplate(format = 'standard') {
-    // Map formats to filenames (extend here if you add more)
-    const filename =
-      format === 'enhanced'
-        ? 'veo3-enhanced-continuity.md'
-        : 'veo3-json-guidelines.md';
-
+  async loadTemplate(format='standard'){
+    const filename = (format==='enhanced')
+      ? 'veo3-enhanced-continuity.md'
+      : 'veo3-json-guidelines.md';
     const templatePath = path.join(__dirname, '../../instructions/', filename);
     console.log(`[OpenAI] Loading template: ${filename}`);
-
     return await fs.readFile(templatePath, 'utf8');
   }
 
-  // ---------------------------
-  // STANDARD / PLUS generation
-  // ---------------------------
-  async generateSegments(params) {
-    console.log(
-      '[OpenAI] Starting generation with format:',
-      params.jsonFormat || 'standard'
-    );
-    console.log('[OpenAI] Setting mode:', params.settingMode || 'single');
+  async generateSegments(params){
+    console.log('[OpenAI] Starting OpenAI generation with:', {
+      ageRange: params.ageRange, gender: params.gender, product: params.product,
+      room: params.room, style: params.style, jsonFormat: params.jsonFormat || 'standard',
+      continuationMode: !!params.continuationMode, settingMode: params.settingMode || 'single',
+      scriptWords: params.script?.split(/\s+/).length || 0,
+      maxSegments: params.maxSegments ?? null,
+      sequential: params.sequential ?? null,
+    });
 
     const template = await this.loadTemplate(params.jsonFormat);
-
-    // Step 1: Analyze and split script
     let scriptSegments = await this.splitScript(params.script);
-
-    // Optional cap (debugging)
     if (params?.maxSegments && Number.isFinite(+params.maxSegments)) {
       scriptSegments = scriptSegments.slice(0, +params.maxSegments);
     }
-
     console.log('[OpenAI] Script split into', scriptSegments.length, 'segments');
 
-    // Strategy based on size
+    // Force sequential for larger jobs or continuation
     const autoSequential =
-      params.sequential === undefined ? scriptSegments.length >= 8 : !!params.sequential;
+      params.sequential === undefined
+        ? (params.continuationMode ? true : scriptSegments.length >= 6)
+        : !!params.sequential;
+
     const effectiveConcurrency = autoSequential ? 1 : SEGMENT_CONCURRENCY;
 
-    // Locations
+    // map locations length to segments
     let locations = [];
-    if (params.settingMode === 'single') {
+    if ((params.settingMode || 'single') === 'single') {
       locations = Array(scriptSegments.length).fill(params.room);
     } else {
-      const src = params.locations || [];
-      locations = Array.from({ length: scriptSegments.length }, (_, i) => {
-        return src[i] ?? src[src.length - 1] ?? 'living room';
-      });
+      const src = Array.isArray(params.locations) ? params.locations : [];
+      locations = Array.from({ length: scriptSegments.length }, (_, i) =>
+        src[i] ?? src[src.length - 1] ?? 'living room'
+      );
     }
 
-    // Step 2: Base descriptions
     console.log('[OpenAI] Generating base descriptions...');
     const baseDescriptions = await callOpenAIWithRetry(
-      () =>
-        withTimeout(
-          this.generateBaseDescriptions(params, template),
-          OPENAI_CALL_TIMEOUT,
-          'openai_base'
-        ),
+      () => withTimeout(this.generateBaseDescriptions(params, template),
+                        OPENAI_CALL_TIMEOUT, 'openai_base'),
       'openai_base'
     );
-    console.log('[OpenAI] Base descriptions generated');
+    console.log('[OpenAI] Base descriptions parsed successfully');
 
     console.log(
       `[OpenAI] Generating individual segments with concurrency = ${effectiveConcurrency} (sequential=${autoSequential})`
     );
 
-    // Helper to build a single segment
     const makeSegment = async (scriptPart, i, previousSegment) => {
       const idx = i + 1;
-      console.log(`[OpenAI] Generating segment ${idx}/${scriptSegments.length}`);
-      const seg = await callOpenAIWithRetry(
-        () =>
-          withTimeout(
+      console.log(`[OpenAI] >>> start segment ${idx}/${scriptSegments.length}`);
+      console.time(`[seg ${idx}]`);
+      try {
+        const seg = await callOpenAIWithRetry(
+          () => withTimeout(
             this.generateSegment({
               segmentNumber: idx,
               totalSegments: scriptSegments.length,
@@ -248,24 +171,24 @@ class OpenAIService {
             OPENAI_CALL_TIMEOUT,
             `openai_segment_${idx}`
           ),
-        `openai_segment_${idx}`
-      );
-      return seg;
+          `openai_segment_${idx}`
+        );
+        return seg;
+      } finally {
+        console.timeEnd(`[seg ${idx}]`);
+        console.log(`[OpenAI] <<< end segment ${idx}/${scriptSegments.length}`);
+      }
     };
 
-    // Step 3: Generate each segment
-    let segments;
-
+    let segments = [];
     if (autoSequential) {
-      segments = [];
       for (let i = 0; i < scriptSegments.length; i++) {
         const prev = i > 0 ? segments[i - 1] : null;
         segments.push(await makeSegment(scriptSegments[i], i, prev));
       }
     } else {
       segments = await mapWithConcurrency(
-        scriptSegments,
-        effectiveConcurrency,
+        scriptSegments, effectiveConcurrency,
         async (scriptPart, i) => makeSegment(scriptPart, i, null)
       );
     }
@@ -280,135 +203,75 @@ class OpenAIService {
     };
   }
 
-  async splitScript(script) {
-    const wordsPerSecond       = 150 / 60; // 2.5 wps
-    const minWordsFor6Seconds  = 15;
-    const targetWordsFor8Sec   = 20;
-    const maxWordsFor8Seconds  = 22;
+  async splitScript(script){
+    const wordsPerSecond = 150/60, min=15, target=20, max=22;
+    console.log('[OpenAI] Script splitting parameters:', { minWords:min, targetWords:target, maxWords:max });
 
-    console.log('[OpenAI] Script splitting parameters:', {
-      minWords:  minWordsFor6Seconds,
-      targetWords: targetWordsFor8Sec,
-      maxWords:  maxWordsFor8Seconds,
-    });
+    const sentences = script.match(/[^.!?]+[.!?]+/g) || [script];
+    const raw = [];
+    let cur = '', count = 0;
 
-    const sentences     = script.match(/[^.!?]+[.!?]+/g) || [script];
-    const rawSegments   = [];
-    let currentSegment  = '';
-    let currentWordCount = 0;
-
-    for (let i = 0; i < sentences.length; i++) {
-      const sentence      = sentences[i].trim();
-      const sentenceWords = sentence.split(/\s+/).length;
-
-      if (currentSegment === '') {
-        currentSegment   = sentence;
-        currentWordCount = sentenceWords;
-
-        while (currentWordCount < minWordsFor6Seconds && i + 1 < sentences.length) {
+    for (let i=0;i<sentences.length;i++){
+      const s = sentences[i].trim();
+      const w = s.split(/\s+/).length;
+      if (cur===''){ cur=s; count=w;
+        while (count<min && i+1<sentences.length){
           i++;
-          const nextSentence = sentences[i].trim();
-          const nextWords    = nextSentence.split(/\s+/).length;
-
-          if (currentWordCount + nextWords > maxWordsFor8Seconds) {
-            if (currentWordCount < minWordsFor6Seconds) {
-              currentSegment   += ' ' + nextSentence;
-              currentWordCount += nextWords;
-            } else {
-              i--;
-              break;
-            }
-          } else {
-            currentSegment   += ' ' + nextSentence;
-            currentWordCount += nextWords;
-          }
+          const nxt = sentences[i].trim();
+          const wn = nxt.split(/\s+/).length;
+          if (count+wn > max){ if (count<min){ cur+=' '+nxt; count+=wn; } else { i--; break; } }
+          else { cur+=' '+nxt; count+=wn; }
         }
-
-        rawSegments.push(currentSegment);
-        currentSegment   = '';
-        currentWordCount = 0;
+        raw.push(cur); cur=''; count=0;
       }
     }
 
-    const finalSegments = [];
-    for (let i = 0; i < rawSegments.length; i++) {
-      const segment   = rawSegments[i];
-      const wordCount = segment.split(/\s+/).length;
-      const duration  = wordCount / wordsPerSecond;
-
-      console.log(
-        `[OpenAI] Raw segment ${i + 1}: ${wordCount} words, ~${duration.toFixed(1)}s speaking time`
-      );
-
-      if (wordCount < minWordsFor6Seconds && i < rawSegments.length - 1) {
-        const nextSegment = rawSegments[i + 1];
-        const nextWords   = nextSegment.split(/\s+/).length;
-
-        if (nextWords > minWordsFor6Seconds) {
-          const nextSentences   = nextSegment.match(/[^.!?]+[.!?]+/g) || [nextSegment];
-          if (nextSentences.length > 1) {
-            const borrowedSentence = nextSentences[0];
-            const borrowedWords    = borrowedSentence.split(/\s+/).length;
-
-            if (wordCount + borrowedWords <= maxWordsFor8Seconds) {
-              finalSegments.push(segment + ' ' + borrowedSentence);
-              rawSegments[i + 1] = nextSentences.slice(1).join(' ');
-              continue;
-            }
+    const final = [];
+    for (let i=0;i<raw.length;i++){
+      const seg = raw[i];
+      const wc = seg.split(/\s+/).length;
+      const dur = wc/wordsPerSecond;
+      console.log(`[OpenAI] Raw segment ${i+1}: ${wc} words, ~${dur.toFixed(1)}s speaking time`);
+      if (wc<min && i<raw.length-1){
+        const next = raw[i+1];
+        const nWords = next.split(/\s+/).length;
+        if (nWords>min){
+          const ns = next.match(/[^.!?]+[.!?]+/g) || [next];
+          if (ns.length>1){
+            const borrow = ns[0], bw = borrow.split(/\s+/).length;
+            if (wc+bw <= max){ final.push(seg+' '+borrow); raw[i+1] = ns.slice(1).join(' '); continue; }
           }
         }
-
-        if (i < rawSegments.length - 1) {
-          const merged     = segment + ' ' + rawSegments[i + 1];
-          const mergedWords = merged.split(/\s+/).length;
-
-          if (mergedWords <= 30) {
-            finalSegments.push(merged);
-            i++;
-            continue;
-          }
-        }
+        const merged = seg+' '+raw[i+1];
+        const mw = merged.split(/\s+/).length;
+        if (mw <= 30){ final.push(merged); i++; continue; }
       }
-
-      finalSegments.push(segment);
+      final.push(seg);
     }
 
     console.log('[OpenAI] Final segment distribution:');
-    finalSegments.forEach((segment, i) => {
-      const wordCount = segment.split(/\s+/).length;
-      const duration  = wordCount / wordsPerSecond;
-      console.log(
-        `  Segment ${i + 1}: ${wordCount} words, ~${duration.toFixed(1)}s speaking time`
-      );
-      if (duration < 6) {
-        console.warn(`  ⚠️  Segment ${i + 1} is under 6 seconds!`);
-      }
+    final.forEach((s,i)=> {
+      const wc = s.split(/\s+/).length, dur = wc/wordsPerSecond;
+      console.log(`  Segment ${i+1}: ${wc} words, ~${dur.toFixed(1)}s speaking time`);
+      if (dur<6) console.warn(`  ⚠️  Segment ${i+1} is under 6 seconds!`);
     });
 
-    return finalSegments;
+    return final;
   }
 
-  async generateBaseDescriptions(params, template) {
+  async generateBaseDescriptions(params, template){
     console.log('[OpenAI] Calling API for base descriptions');
-    try {
-      const response = await withTimeout(
-        this.openai.chat.completions.create({
-          model: 'gpt-4o', // keep quality high for the big block
-          messages: [
-            {
-              role: 'system',
-              content:
-                `${template}\n\n` +
-                `Generate the base descriptions that will remain IDENTICAL across all segments. ` +
-                `Follow the exact word count requirements. Return ONLY valid JSON.`,
-            },
-            {
-              role: 'user',
-              content: `Create base descriptions for:
+    const resp = await this.openai.chat.completions.create({
+      model: 'gpt-4o',
+      messages: [
+        { role:'system',
+          content: `${template}\n\nGenerate the base descriptions that will remain IDENTICAL across all segments. Follow the exact word count requirements. Return ONLY valid JSON.`},
+        { role:'user',
+          content: `Create base descriptions for:
 Age: ${params.ageRange}
 Gender: ${params.gender}
 Setting Mode: ${params.settingMode || 'single'}
-${params.settingMode === 'single' ? `Room: ${params.room}` : `Locations: ${params.locations?.join(', ') || 'various'}`}
+${(params.settingMode||'single')==='single' ? `Room: ${params.room}` : `Locations: ${Array.isArray(params.locations)?params.locations.join(', '):'various'}`}
 Style: ${params.style}
 Product: ${params.product}
 Camera Style: ${params.cameraStyle || 'static-handheld'}
@@ -425,53 +288,35 @@ Return a JSON object with these exact keys:
   "environment": "[150+ words or 250+ if enhanced]",
   "voice": "[50+ words or 100+ if enhanced]",
   "productHandling": "[50+ words]"
-}`,
-            },
-          ],
-          response_format: { type: 'json_object' },
-          temperature: 0.3,
-          max_tokens: 4500,
-        }),
-        OPENAI_CALL_TIMEOUT,
-        'openai_base'
-      );
-
-      const raw = response.choices?.[0]?.message?.content || '';
-      let parsed = safeParseJSON(raw);
-      if (!parsed.ok) {
-        console.warn('[OpenAI] Base JSON parse failed — attempting repair');
-        parsed = { ok: true, value: await repairJSONWithModel(this.openai, raw, 2000) };
-      }
-      console.log('[OpenAI] Base descriptions parsed successfully');
-      return parsed.value;
-    } catch (error) {
-      console.error('[OpenAI] Error in generateBaseDescriptions:', error);
-      throw error;
+}` }
+      ],
+      response_format:{ type:'json_object' },
+      temperature:0.3,
+      max_tokens: 3500 // keep this generous; it’s the big block
+    });
+    const raw = resp.choices?.[0]?.message?.content || '';
+    let parsed = safeParseJSON(raw);
+    if (!parsed.ok) {
+      console.warn('[OpenAI] Base JSON parse failed — attempting repair');
+      parsed = { ok:true, value: await repairJSONWithModel(this.openai, raw, 1800) };
     }
+    return parsed.value;
   }
 
-  async generateSegment(params) {
-    try {
-      const response = await withTimeout(
-        this.openai.chat.completions.create({
-          model: OPENAI_SEGMENT_MODEL, // faster model here
-          messages: [
-            {
-              role: 'system',
-              content:
-                `${params.template}\n\n` +
-                `Generate a Veo 3 JSON segment following the exact structure. ` +
-                `Use the provided base descriptions WORD-FOR-WORD.`,
-            },
-            {
-              role: 'user',
-              content: `Create segment ${params.segmentNumber} of ${params.totalSegments}:
+  async generateSegment(params){
+    const resp = await this.openai.chat.completions.create({
+      model: OPENAI_SEGMENT_MODEL,
+      messages: [
+        { role:'system',
+          content: `${params.template}\n\nGenerate a Veo 3 JSON segment following the exact structure. Use the provided base descriptions WORD-FOR-WORD.` },
+        { role:'user',
+          content: `Create segment ${params.segmentNumber} of ${params.totalSegments}:
 
 Dialogue for this segment: "${params.scriptPart}"
 Product: ${params.product}
 Current Location: ${params.currentLocation}
-${params.previousLocation && params.previousLocation !== params.currentLocation ? `Character just moved from: ${params.previousLocation}` : ''}
-${params.nextLocation && params.nextLocation !== params.currentLocation ? `Character will move to: ${params.nextLocation}` : ''}
+${params.previousLocation && params.previousLocation!==params.currentLocation ? `Character just moved from: ${params.previousLocation}` : ''}
+${params.nextLocation && params.nextLocation!==params.currentLocation ? `Character will move to: ${params.nextLocation}` : ''}
 
 Visual Settings:
 - Camera Style: ${params.cameraStyle || 'static-handheld'}
@@ -488,71 +333,47 @@ Product Handling: ${params.baseDescriptions.productHandling || 'Natural handling
 
 ${params.previousSegment ? `Previous segment ended with:
 Position: ${params.previousSegment.action_timeline?.transition_prep || params.previousSegment.segment_info?.continuity_markers?.end_position || 'N/A'}` : 'This is the opening segment.'}
-`,
-            },
-          ],
-          response_format: { type: 'json_object' },
-          temperature: 0.5,
-          max_tokens: 3000, // tighter for speed
-        }),
-        OPENAI_CALL_TIMEOUT,
-        `openai_segment_${params.segmentNumber}`
-      );
+` }
+      ],
+      response_format:{ type:'json_object' },
+      temperature:0.45,
+      max_tokens: 2200 // a bit tighter to keep calls fast
+    });
 
-      const raw = response.choices?.[0]?.message?.content || '';
-      let parsed = safeParseJSON(raw);
-      if (!parsed.ok) {
-        console.warn('[OpenAI] Segment JSON parse failed — attempting repair');
-        parsed = { ok: true, value: await repairJSONWithModel(this.openai, raw, 3500) };
-      }
-      return parsed.value;
-    } catch (error) {
-      console.error('[OpenAI] Error in generateSegment:', error);
-      throw error;
+    const raw = resp.choices?.[0]?.message?.content || '';
+    let parsed = safeParseJSON(raw);
+    if (!parsed.ok) {
+      console.warn('[OpenAI] Segment JSON parse failed — attempting repair');
+      parsed = { ok:true, value: await repairJSONWithModel(this.openai, raw, 1800) };
     }
+    return parsed.value;
   }
 
-  generateCharacterId(params) {
-    return `${(params.avatarMode === 'animal' ? params.animal?.species : 'human')}_${params.gender || 'N/A'}_${params.ageRange || 'N/A'}_${Date.now()}`.replace(/\s+/g, '_');
+  generateCharacterId(params){
+    return `${(params.avatarMode==='animal'?params.animal?.species:'human')}_${params.gender||'N/A'}_${params.ageRange||'N/A'}_${Date.now()}`.replace(/\s+/g,'_');
   }
 
-  // ---------------------------------
-  // CONTINUATION-style segment (Plus)
-  // ---------------------------------
-  async generateContinuationStyleSegment(params) {
-    // Use provided template if caller already loaded it; otherwise load once here
-    const template = params.template || (await this.loadTemplate(params.jsonFormat || 'standard'));
+  async generateContinuationStyleSegment(params){
+    const template = await this.loadTemplate(params.jsonFormat || 'standard');
+    const base = params.baseDescriptions || await withTimeout(
+      this.generateBaseDescriptions(params, template),
+      OPENAI_CALL_TIMEOUT,
+      'openai_base_for_continuation'
+    );
 
-    try {
-      // Ensure continuation always has baseDescriptions
-      const base =
-        params.baseDescriptions ||
-        (await withTimeout(
-          this.generateBaseDescriptions(params, template),
-          OPENAI_CALL_TIMEOUT,
-          'openai_base_for_continuation'
-        ));
-
-      const response = await withTimeout(
-        this.openai.chat.completions.create({
-          model: OPENAI_SEGMENT_MODEL, // faster per-segment model
-          messages: [
-            {
-              role: 'system',
-              content:
-                `${template}\n\n` +
-                `Generate a segment that maintains the EXACT same structure as standard segments, ` +
-                `but with ENHANCED voice and behavior sections. Return ONLY valid JSON.`,
-            },
-            {
-              role: 'user',
-              content: `Create segment ${params.segmentNumber} of ${params.totalSegments}:
+    const resp = await this.openai.chat.completions.create({
+      model: OPENAI_SEGMENT_MODEL,
+      messages: [
+        { role:'system',
+          content: `${template}\n\nGenerate a segment that maintains the EXACT same structure as standard segments, but with ENHANCED voice and behavior sections.` },
+        { role:'user',
+          content: `Create segment ${params.segmentNumber} of ${params.totalSegments}:
 
 Dialogue for this segment: "${params.scriptPart}"
 Product: ${params.product}
 Current Location: ${params.currentLocation}
-${params.previousLocation && params.previousLocation !== params.currentLocation ? `Character just moved from: ${params.previousLocation}` : ''}
-${params.nextLocation && params.nextLocation !== params.currentLocation ? `Character will move to: ${params.nextLocation}` : ''}
+${params.previousLocation && params.previousLocation!==params.currentLocation ? `Character just moved from: ${params.previousLocation}` : ''}
+${params.nextLocation && params.nextLocation!==params.currentLocation ? `Character will move to: ${params.nextLocation}` : ''}
 
 Visual Settings:
 - Camera Style: ${params.cameraStyle || 'static-handheld'}
@@ -569,45 +390,29 @@ Product Handling: ${base.productHandling || 'Natural handling'}
 
 Voice Profile to Maintain:
 ${JSON.stringify(params.voiceProfile || {}, null, 2)}
-`,
-            },
-          ],
-          response_format: { type: 'json_object' },
-          temperature: 0.5,
-          max_tokens: 3000,
-        }),
-        OPENAI_CALL_TIMEOUT,
-        `openai_continuation_style_${params.segmentNumber}`
-      );
+` }
+      ],
+      response_format:{ type:'json_object' },
+      temperature:0.5,
+      max_tokens: 2200
+    });
 
-      const raw = response.choices?.[0]?.message?.content || '';
-      let parsed = safeParseJSON(raw);
-      if (!parsed.ok) {
-        console.warn('[OpenAI] Continuation-style JSON parse failed — attempting repair');
-        parsed = { ok: true, value: await repairJSONWithModel(this.openai, raw, 3200) };
-      }
-      return parsed.value;
-    } catch (error) {
-      console.error('[OpenAI] Error in generateContinuationStyleSegment:', error);
-      throw error;
+    const raw = resp.choices?.[0]?.message?.content || '';
+    let parsed = safeParseJSON(raw);
+    if (!parsed.ok) {
+      console.warn('[OpenAI] Continuation-style JSON parse failed — attempting repair');
+      parsed = { ok:true, value: await repairJSONWithModel(this.openai, raw, 1800) };
     }
+    return parsed.value;
   }
 
-  async extractDetailedVoiceProfile(segment, params) {
+  async extractDetailedVoiceProfile(segment, params){
     console.log('[OpenAI] Extracting detailed voice profile');
-    try {
-      const response = await withTimeout(
-        this.openai.chat.completions.create({
-          model: 'gpt-4o',
-          messages: [
-            {
-              role: 'system',
-              content:
-                'Generate a detailed voice continuity profile for video consistency. Return ONLY JSON.',
-            },
-            {
-              role: 'user',
-              content: `Create detailed voice profile for:
+    const resp = await this.openai.chat.completions.create({
+      model: 'gpt-4o',
+      messages: [
+        { role:'system', content:'Generate a detailed voice continuity profile for video consistency. Return ONLY JSON.' },
+        { role:'user', content:`Create detailed voice profile for:
 Age: ${params.ageRange}
 Gender: ${params.gender}
 Energy Level: ${params.energyLevel || '80'}%
@@ -623,60 +428,29 @@ Return:
   "uniqueMarkers": ["..."],
   "regionalAccent": "...",
   "vocalTexture": "..."
-}
-`,
-            },
-          ],
-          response_format: { type: 'json_object' },
-          temperature: 0.3,
-          max_tokens: 1000,
-        }),
-        OPENAI_CALL_TIMEOUT,
-        'openai_voice_profile'
-      );
+}` }
+      ],
+      response_format:{ type:'json_object' },
+      temperature:0.3,
+      max_tokens: 900
+    });
 
-      const raw = response.choices?.[0]?.message?.content || '';
-      let parsed = safeParseJSON(raw);
-      if (!parsed.ok) {
-        console.warn('[OpenAI] Voice profile JSON parse failed — attempting repair');
-        parsed = { ok: true, value: await repairJSONWithModel(this.openai, raw, 1200) };
-      }
-      return parsed.value;
-    } catch (error) {
-      console.error('[OpenAI] Error enhancing voice profile:', error);
-      // non-fatal fallback
-      return {
-        pitchRange: '165-185 Hz',
-        speakingRate: '145-150 wpm',
-        toneQualities: 'warm, clear, friendly',
-        breathingPattern: 'natural pauses between phrases',
-        emotionalInflections: {
-          excitement: 'slightly higher pitch',
-          emphasis: 'slight volume increase on key words',
-          warmth: 'softened attack, relaxed pace',
-        },
-        uniqueMarkers: [],
-        regionalAccent: '',
-        vocalTexture: 'smooth',
-      };
+    const raw = resp.choices?.[0]?.message?.content || '';
+    let parsed = safeParseJSON(raw);
+    if (!parsed.ok) {
+      console.warn('[OpenAI] Voice profile JSON parse failed — attempting repair');
+      parsed = { ok:true, value: await repairJSONWithModel(this.openai, raw, 1000) };
     }
+    return parsed.value;
   }
 
-  getEnergyLevel(energyArc, segmentNumber, totalSegments) {
-    const progress = segmentNumber / totalSegments;
-    switch (energyArc) {
-      case 'building':
-        return `${Math.round(60 + 35 * progress)}% - Building from calm to excited`;
-      case 'problem-solution':
-        if (progress < 0.3) return '70% - Concerned, explaining problem';
-        if (progress < 0.7) return '60% - Working through solution';
-        return '90% - Excited about results';
-      case 'discovery':
-        if (progress < 0.5) return '75% - Curious and exploring';
-        return '85% - Convinced and enthusiastic';
-      case 'consistent':
-      default:
-        return '80% - Steady, engaging energy throughout';
+  getEnergyLevel(energyArc, segmentNumber, totalSegments){
+    const p = segmentNumber / totalSegments;
+    switch (energyArc){
+      case 'building': return `${Math.round(60 + 35*p)}% - Building from calm to excited`;
+      case 'problem-solution': if (p < 0.3) return '70% - Concerned, explaining problem'; if (p < 0.7) return '60% - Working through solution'; return '90% - Excited about results';
+      case 'discovery': return p < 0.5 ? '75% - Curious and exploring' : '85% - Convinced and enthusiastic';
+      default: return '80% - Steady, engaging energy throughout';
     }
   }
 }

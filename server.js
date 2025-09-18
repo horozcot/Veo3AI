@@ -64,22 +64,28 @@ app.use(express.json({ limit: '10mb' }));
 // API guard: hard timeout for all /api
 // ====================================
 app.use('/api', (req, res, next) => {
-  // configurable via .env
-  const HARD_TIMEOUT_MS = Number(process.env.ROUTE_TIMEOUT_MS || 900_000);
+  // Allow overriding via env; make local very generous
+  const API_ROUTE_TIMEOUT_MS =
+    Number.parseInt(process.env.API_ROUTE_TIMEOUT_MS || '', 10) || 360_000; // 6 min
 
-  req.setTimeout?.(HARD_TIMEOUT_MS + 2_000);
-  res.setTimeout?.(HARD_TIMEOUT_MS + 2_000);
+  req.setTimeout?.(API_ROUTE_TIMEOUT_MS + 2_000);
+  res.setTimeout?.(API_ROUTE_TIMEOUT_MS + 2_000);
 
+  let timedOut = false;
   const timer = setTimeout(() => {
+    timedOut = true;
     console.warn('[api] route_timeout', req.method, req.url);
     if (!res.headersSent) {
       res.status(504).json({ ok: false, error: 'route_timeout' });
     }
-  }, HARD_TIMEOUT_MS);
+  }, API_ROUTE_TIMEOUT_MS);
 
-  res.on('finish', () => clearTimeout(timer));
-  res.on('close',  () => clearTimeout(timer));
+  const clear = () => clearTimeout(timer);
+  res.on('finish', clear);
+  res.on('close', clear);
 
+  // Helpful log so we see the budget per request
+  console.log(`[api] timeout budget: ${API_ROUTE_TIMEOUT_MS}ms`);
   next();
 });
 
@@ -139,5 +145,5 @@ const server = app.listen(PORT, '0.0.0.0', () => {
 });
 
 // bump Node HTTP timeouts just above guard
-server.headersTimeout = 905_000;
-server.requestTimeout = 905_000;
+server.headersTimeout = 370_000;
+server.requestTimeout = 365_000;
