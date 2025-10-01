@@ -117,11 +117,6 @@ const BUILD_DIR = fs.existsSync(path.join(ROOT_BUILD_DIR, 'index.html'))
   ? ROOT_BUILD_DIR
   : CLIENT_BUILD_DIR;
 
-// Fast root health response for platform health checks
-app.get('/', (_req, res) => {
-  res.status(200).send('ok');
-});
-
 app.use(express.static(BUILD_DIR));
 
 app.get('*', (req, res) => {

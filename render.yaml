@@ -5,7 +5,7 @@ services:
     plan: free
     branch: develop
     rootDir: ./
-    healthCheckPath: /
+    healthCheckPath: /api/health
     buildCommand: |
       npm run install-all
       npm run build
