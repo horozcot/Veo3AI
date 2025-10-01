@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import { CAMERA_STYLE_DESCRIPTIONS } from '../srcCameraStyles';
+import { VOICE_TYPES } from '../voiceTypes';
 
 function ScriptForm({ onSubmit, loading }) {
   const [formData, setFormData] = useState({
@@ -319,7 +321,7 @@ function ScriptForm({ onSubmit, loading }) {
       )}
 
       <div className="form-group">
-        <label htmlFor="product">Product Name *</label>
+        <label htmlFor="product">Product Name (optional)</label>
         <input
           type="text"
           id="product"
@@ -327,7 +329,6 @@ function ScriptForm({ onSubmit, loading }) {
           value={formData.product}
           onChange={handleChange}
           placeholder="e.g., Skincare Serum, Coffee Maker..."
-          required
         />
       </div>
 
@@ -369,13 +370,9 @@ function ScriptForm({ onSubmit, loading }) {
           value={formData.voiceType}
           onChange={handleChange}
         >
-          <option value="warm-friendly">Warm & Friendly</option>
-          <option value="professional-clear">Professional & Clear</option>
-          <option value="energetic-upbeat">Energetic & Upbeat</option>
-          <option value="calm-soothing">Calm & Soothing</option>
-          <option value="conversational-casual">Conversational & Casual</option>
-          <option value="authoritative-confident">Authoritative & Confident</option>
-          <option value="youthful-playful">Youthful & Playful</option>
+          {VOICE_TYPES.map(v => (
+            <option key={v.value} value={v.value}>{v.label}</option>
+          ))}
         </select>
         <p className="form-help-text">
           Sets the vocal tone and delivery style for consistency across segments
@@ -574,6 +571,9 @@ function ScriptForm({ onSubmit, loading }) {
             <option value="orbit">Subtle Orbit Movement</option>
             <option value="dynamic">Dynamic Handheld</option>
           </select>
+          <p className="form-help-text">
+            {CAMERA_STYLE_DESCRIPTIONS[formData.cameraStyle] || 'Choose a camera behavior for the segment.'}
+          </p>
         </div>
 
         <div className="form-group">

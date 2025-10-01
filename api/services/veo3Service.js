@@ -106,7 +106,28 @@ class Veo3Service {
 
   createVideoPrompt(segment, options) {
     const isEnhanced = segment.segment_info?.continuity_markers ? true : false;
-    
+
+    // Pull commonly used fields with sensible fallbacks
+    const currentState = segment.character_description?.current_state || 'Natural, relaxed presenter';
+    const dialogue = segment.action_timeline?.dialogue || '';
+    const synchronizedActions = segment.action_timeline?.synchronized_actions || 'Natural gestures while speaking';
+    const microExpressions = segment.action_timeline?.micro_expressions || 'Natural facial movements';
+    const cameraPosition = segment.scene_continuity?.camera_position || 'Medium shot, eye level';
+    const environmentProps = segment.scene_continuity?.props_in_frame || 'Room elements relevant to this shot';
+    const physicalCanonical = segment.character_description?.physical || '';
+    const clothingCanonical = segment.character_description?.clothing || '';
+
+    // Detect POV/selfie to strengthen directives
+    const isPOVSelfie = /\b(pov|selfie)\b/i.test(cameraPosition);
+    const povDirectives = isPOVSelfie
+      ? `\nPOV-SELFIE DIRECTIVES:\n- Use front-facing camera at arm's length (approx. 40–60 cm).\n- Eye-level lens; character looks into lens occasionally while speaking.\n- Subtle hand jitter only; no dramatic pans or tilts.\n- Framing: head and shoulders dominant; device or arm only appears naturally at frame edge.\n- Maintain authentic phone-in-hand feel.`
+      : '';
+
+    // Appearance lock to enforce ethnicity/skin tone and outfit consistency
+    const appearanceLock = (physicalCanonical || clothingCanonical)
+      ? `\nAPPEARANCE LOCK (use verbatim – reflects ethnicity, skin tone, and features):\n- Physical (canonical): ${physicalCanonical}\n- Clothing (canonical): ${clothingCanonical}`
+      : '';
+
     let prompt = '';
 
     if (isEnhanced) {
@@ -121,22 +142,17 @@ CONTINUITY REQUIREMENTS:
 - Start Expression: ${segment.segment_info.continuity_markers.start_expression}
 - End Expression: ${segment.segment_info.continuity_markers.end_expression}
 
-CHARACTER:
-${segment.character_description.current_state}
+CHARACTER STATE:\n${currentState}${appearanceLock}
 
-DIALOGUE: "${segment.action_timeline.dialogue}"
+DIALOGUE: "${dialogue}"
 
-SYNCHRONIZED ACTIONS:
-${Object.entries(segment.action_timeline.synchronized_actions || {})
+SYNCHRONIZED ACTIONS:\n${Object.entries(segment.action_timeline.synchronized_actions || {})
   .map(([time, action]) => `${time}: ${action}`)
   .join('\n')}
 
-SCENE:
-- Camera: ${segment.scene_continuity.camera_position}
-- Environment: ${segment.scene_continuity.props_in_frame}
+SCENE:\n- Camera: ${cameraPosition}${povDirectives}\n- Environment: ${environmentProps}
 
-MICRO-EXPRESSIONS:
-${segment.action_timeline.micro_expressions || 'Natural facial movements'}
+MICRO-EXPRESSIONS:\n${microExpressions}
 
 Style: Authentic UGC content, handheld camera feel, natural lighting`;
     } else {
@@ -144,16 +160,13 @@ Style: Authentic UGC content, handheld camera feel, natural lighting`;
       prompt = `
 UGC Video Segment ${segment.segment_info?.segment_number || 1}
 
-CHARACTER STATE:
-${segment.character_description?.current_state || 'Natural, relaxed presenter'}
+CHARACTER STATE:\n${currentState}${appearanceLock}
 
-DIALOGUE: "${segment.action_timeline?.dialogue || ''}"
+DIALOGUE: "${dialogue}"
 
-ACTIONS:
-${segment.action_timeline?.synchronized_actions || 'Natural gestures while speaking'}
+ACTIONS:\n${synchronizedActions}
 
-CAMERA:
-${segment.scene_continuity?.camera_position || 'Medium shot, eye level'}
+CAMERA:\n${cameraPosition}${povDirectives}
 
 Style: Authentic UGC content, casual and relatable`;
     }

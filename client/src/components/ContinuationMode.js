@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { generateSegments } from '../api/client';
 import DownloadButton from './DownloadButton';
 import ResultsDisplay from './ResultsDisplay';
+import { VOICE_TYPES } from '../voiceTypes';
 
 function ContinuationMode() {
   const [loading, setLoading] = useState(false);
@@ -157,11 +158,9 @@ function ContinuationMode() {
                   value={formData.voiceType}
                   onChange={handleChange}
                 >
-                  <option value="warm-friendly">Warm & Friendly</option>
-                  <option value="professional-clear">Professional & Clear</option>
-                  <option value="energetic-upbeat">Energetic & Upbeat</option>
-                  <option value="calm-soothing">Calm & Soothing</option>
-                  <option value="conversational-casual">Conversational & Casual</option>
+                  {VOICE_TYPES.map(v => (
+                    <option key={v.value} value={v.value}>{v.label}</option>
+                  ))}
                 </select>
               </div>
 
@@ -261,7 +260,7 @@ function ContinuationMode() {
           <div className="form-section">
             <h3>Product and Script</h3>
             <div className="form-group">
-              <label htmlFor="product">Product Name *</label>
+              <label htmlFor="product">Product Name (optional)</label>
               <input
                 type="text"
                 id="product"
@@ -269,7 +268,6 @@ function ContinuationMode() {
                 value={formData.product}
                 onChange={handleChange}
                 placeholder="e.g., Skincare Serum, Coffee Maker..."
-                required
               />
             </div>
 
@@ -402,6 +400,16 @@ function ContinuationMode() {
                   <option value="documentary-style">Documentary Style</option>
                   <option value="pov-selfie">POV Selfie (phone-in-hand)</option>
                 </select>
+                <p className="form-help-text">
+                  {(() => {
+                    try {
+                      const { CAMERA_STYLE_DESCRIPTIONS } = require('../srcCameraStyles');
+                      return CAMERA_STYLE_DESCRIPTIONS[formData.cameraStyle] || 'Pick a camera behavior for continuation segments.';
+                    } catch (_) {
+                      return 'Pick a camera behavior for continuation segments.';
+                    }
+                  })()}
+                </p>
               </div>
 
               <div className="form-group">

@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { generateNewCont } from '../api/clientNewCont';
 import DownloadButton from './DownloadButton';
 import ResultsDisplay from './ResultsDisplay';
+import { VOICE_TYPES } from '../voiceTypes';
 
 function NewContinuationMode() {
   const [loading, setLoading] = useState(false);
@@ -104,8 +105,16 @@ function NewContinuationMode() {
           <div className="form-section">
             <h3>Product & Script</h3>
             <div className="form-group">
-              <label>Product *</label>
-              <input type="text" name="product" value={formData.product} onChange={handleChange} required />
+              <label>Product (optional)</label>
+              <input type="text" name="product" value={formData.product} onChange={handleChange} />
+            </div>
+            <div className="form-group">
+              <label htmlFor="voiceType">Voice Type</label>
+              <select id="voiceType" name="voiceType" value={formData.voiceType} onChange={handleChange}>
+                {VOICE_TYPES.map(v => (
+                  <option key={v.value} value={v.value}>{v.label}</option>
+                ))}
+              </select>
             </div>
             <div className="form-group">
               <label>Script *</label>
