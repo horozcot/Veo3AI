@@ -1,9 +1,13 @@
 export async function generateSegmentsPlus(data) {
   console.log('[API Client Plus] Calling /api/generate-plus with:', data);
+  const payload = { ...data };
+  if (payload.product !== undefined && String(payload.product).trim() === '') {
+    delete payload.product;
+  }
   const response = await fetch('/api/generate-plus', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
+    body: JSON.stringify(payload),
   });
   console.log('[API Client Plus] Response status:', response.status);
   if (!response.ok) {

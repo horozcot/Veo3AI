@@ -1,9 +1,13 @@
 export async function generateNewCont(data) {
   console.log('[API Client NewCont] Calling /api/generate-new-cont with:', data);
+  const payload = { ...data };
+  if (payload.product !== undefined && String(payload.product).trim() === '') {
+    delete payload.product;
+  }
   const response = await fetch('/api/generate-new-cont', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
+    body: JSON.stringify(payload),
   });
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));

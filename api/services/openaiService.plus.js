@@ -1,4 +1,5 @@
 import OpenAI from 'openai';
+import { getCameraStyleGuidance } from './cameraStyleDefinitions.js';
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -344,8 +345,9 @@ Accent/Region: ${params.accentRegion || 'neutral-american'}
 Setting Mode: ${params.settingMode || 'single'}
 ${params.settingMode === 'single' ? `Room: ${params.room}` : `Locations: ${params.locations?.join(', ') || 'various'}`}
 Style: ${params.style}
-Product: ${params.product}
+Product: ${params.product || 'N/A'}
 Camera Style: ${params.cameraStyle || 'static-handheld'}
+Camera Style Guidance: ${getCameraStyleGuidance(params.cameraStyle)}
 Time of Day: ${params.timeOfDay || 'morning'}
 Background Life: ${params.backgroundLife ? 'Yes' : 'No'}
 Product Display: ${params.productStyle || 'natural'}
@@ -409,13 +411,14 @@ Hard rules: Do NOT reference subtitles, captions, SFX, or music in any field.`
             content: `Create segment ${params.segmentNumber} of ${params.totalSegments}:
 
 Dialogue for this segment: "${params.scriptPart}"
-Product: ${params.product}
+Product: ${params.product || 'N/A'}
 Current Location: ${params.currentLocation}
 ${params.previousLocation && params.previousLocation !== params.currentLocation ? `Character just moved from: ${params.previousLocation}` : ''}
 ${params.nextLocation && params.nextLocation !== params.currentLocation ? `Character will move to: ${params.nextLocation}` : ''}
 
 Visual Settings:
 - Camera Style: ${cameraStyle}
+- Camera Style Direction: ${getCameraStyleGuidance(cameraStyle)}
 - Time of Day: ${params.timeOfDay || 'morning'}
 - Background Life: ${params.backgroundLife ? 'Include subtle background activity' : 'Focus only on character'}
 - Energy Level: ${this.getEnergyLevel(params.energyArc, params.segmentNumber, params.totalSegments)}

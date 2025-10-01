@@ -1,12 +1,16 @@
 export async function generateSegments(data) {
   console.log('[API Client] Calling /api/generate with:', data);
-  
+  const payload = { ...data };
+  if (payload.product !== undefined && String(payload.product).trim() === '') {
+    delete payload.product;
+  }
+
   const response = await fetch('/api/generate', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify(data),
+    body: JSON.stringify(payload),
   });
   
   console.log('[API Client] Response status:', response.status);
@@ -75,13 +79,17 @@ export async function generateVideos(segments) {
 
 export async function generateContinuation(data) {
   console.log('[API Client] Calling /api/generate-continuation with:', data);
-  
+  const payload = { ...data };
+  if (payload.product !== undefined && String(payload.product).trim() === '') {
+    delete payload.product;
+  }
+
   const response = await fetch('/api/generate-continuation', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify(data),
+    body: JSON.stringify(payload),
   });
   
   console.log('[API Client] Response status:', response.status);

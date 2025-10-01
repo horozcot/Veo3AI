@@ -55,9 +55,7 @@ router.post('/generate-continuation', async (req, res) => {
     if (!script || script.trim().length < 50) {
       return res.status(400).json({ error: 'Script must be at least 50 characters long' });
     }
-    if (!product) {
-      return res.status(400).json({ error: 'product is required' });
-    }
+    // product is optional (talking-only scripts allowed)
     if (!voiceProfile || typeof voiceProfile !== 'object') {
       return res.status(400).json({ error: 'voiceProfile (object) is required' });
     }

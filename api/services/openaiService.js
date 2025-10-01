@@ -1,5 +1,6 @@
 // api/services/openaiService.js
 import OpenAI from 'openai';
+import { getCameraStyleGuidance } from './cameraStyleDefinitions.js';
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -273,8 +274,9 @@ Gender: ${params.gender}
 Setting Mode: ${params.settingMode || 'single'}
 ${(params.settingMode||'single')==='single' ? `Room: ${params.room}` : `Locations: ${Array.isArray(params.locations)?params.locations.join(', '):'various'}`}
 Style: ${params.style}
-Product: ${params.product}
+Product: ${params.product || 'N/A'}
 Camera Style: ${params.cameraStyle || 'static-handheld'}
+Camera Style Guidance: ${getCameraStyleGuidance(params.cameraStyle)}
 Time of Day: ${params.timeOfDay || 'morning'}
 Background Life: ${params.backgroundLife ? 'Yes' : 'No'}
 Product Display: ${params.productStyle || 'natural'}
@@ -313,13 +315,14 @@ Return a JSON object with these exact keys:
           content: `Create segment ${params.segmentNumber} of ${params.totalSegments}:
 
 Dialogue for this segment: "${params.scriptPart}"
-Product: ${params.product}
+Product: ${params.product || 'N/A'}
 Current Location: ${params.currentLocation}
 ${params.previousLocation && params.previousLocation!==params.currentLocation ? `Character just moved from: ${params.previousLocation}` : ''}
 ${params.nextLocation && params.nextLocation!==params.currentLocation ? `Character will move to: ${params.nextLocation}` : ''}
 
 Visual Settings:
 - Camera Style: ${params.cameraStyle || 'static-handheld'}
+- Camera Style Direction: ${getCameraStyleGuidance(params.cameraStyle)}
 - Time of Day: ${params.timeOfDay || 'morning'}
 - Background Life: ${params.backgroundLife ? 'Include subtle background activity' : 'Focus only on character'}
 - Energy Level: ${this.getEnergyLevel(params.energyArc, params.segmentNumber, params.totalSegments)}
@@ -370,7 +373,7 @@ Position: ${params.previousSegment.action_timeline?.transition_prep || params.pr
           content: `Create segment ${params.segmentNumber} of ${params.totalSegments}:
 
 Dialogue for this segment: "${params.scriptPart}"
-Product: ${params.product}
+Product: ${params.product || 'N/A'}
 Current Location: ${params.currentLocation}
 ${params.previousLocation && params.previousLocation!==params.currentLocation ? `Character just moved from: ${params.previousLocation}` : ''}
 ${params.nextLocation && params.nextLocation!==params.currentLocation ? `Character will move to: ${params.nextLocation}` : ''}

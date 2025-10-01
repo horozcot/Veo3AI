@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 
 // API route modules
@@ -109,10 +110,17 @@ app.get('/api/health', (_req, res) => {
 // =========================
 // Static React build + SPA
 // =========================
-app.use(express.static(path.join(__dirname, 'build')));
+// Prefer root /build, fallback to /client/build if missing
+const ROOT_BUILD_DIR = path.join(__dirname, 'build');
+const CLIENT_BUILD_DIR = path.join(__dirname, 'client', 'build');
+const BUILD_DIR = fs.existsSync(path.join(ROOT_BUILD_DIR, 'index.html'))
+  ? ROOT_BUILD_DIR
+  : CLIENT_BUILD_DIR;
+
+app.use(express.static(BUILD_DIR));
 
 app.get('*', (req, res) => {
-  const indexPath = path.join(__dirname, 'build', 'index.html');
+  const indexPath = path.join(BUILD_DIR, 'index.html');
   console.log(`Serving React app from: ${indexPath}`);
   res.sendFile(indexPath, (err) => {
     if (err) {
