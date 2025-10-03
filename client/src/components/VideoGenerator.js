@@ -41,7 +41,7 @@ function VideoGenerator({ segments }) {
         onClick={handleGenerateVideos}
         disabled={loading}
       >
-        {loading ? 'Processing...' : 'Generate Video Descriptions'}
+        {loading ? 'Generating...' : 'Generate'}
       </button>
 
       {error && (

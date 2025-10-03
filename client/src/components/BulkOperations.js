@@ -41,14 +41,14 @@ function BulkOperations({ segments, onUpdate }) {
           // Check if this field is selected
           const fieldName = currentPath.split('.').pop();
           if (selectedFields[fieldName] || 
-              currentPath.includes('dialogue') && selectedFields.dialogue ||
-              currentPath.includes('physical') && selectedFields.physical ||
-              currentPath.includes('clothing') && selectedFields.clothing ||
-              currentPath.includes('environment') && selectedFields.environment ||
-              currentPath.includes('current_state') && selectedFields.current_state ||
-              currentPath.includes('voice_matching') && selectedFields.voice_matching ||
-              currentPath.includes('camera_position') && selectedFields.camera_position ||
-              currentPath.includes('location') && selectedFields.location) {
+              (currentPath.includes('dialogue') && selectedFields.dialogue) ||
+              (currentPath.includes('physical') && selectedFields.physical) ||
+              (currentPath.includes('clothing') && selectedFields.clothing) ||
+              (currentPath.includes('environment') && selectedFields.environment) ||
+              (currentPath.includes('current_state') && selectedFields.current_state) ||
+              (currentPath.includes('voice_matching') && selectedFields.voice_matching) ||
+              (currentPath.includes('camera_position') && selectedFields.camera_position) ||
+              (currentPath.includes('location') && selectedFields.location)) {
             matches.push({
               path: currentPath,
               value: obj[key],

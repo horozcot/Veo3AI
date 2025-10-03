@@ -30,7 +30,7 @@ function VideoGeneratorPlus({ segments }) {
         <p className="video-cost">Estimated cost: {getCostDisplay()}</p>
       </div>
       <button className="generate-videos-button" onClick={handleGenerateVideos} disabled={loading}>
-        {loading ? 'Processing...' : 'Generate Video Descriptions'}
+        {loading ? 'Generating...' : 'Generate'}
       </button>
       {error && <div className="error-message">Error: {error}</div>}
       {videos && (

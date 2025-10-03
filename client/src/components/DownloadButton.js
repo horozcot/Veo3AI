@@ -87,12 +87,12 @@ function DownloadButton({ segments, metadata }) {
 <head>
   <title>Veo 3 Script Segments</title>
   <style>
-    body { font-family: Arial, sans-serif; margin: 40px; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif; margin: 40px; font-size: 16px; font-weight: 400; line-height: 1.5; }
     h1 { color: #2c3e50; }
     .segment { page-break-inside: avoid; margin-bottom: 30px; border: 1px solid #ddd; padding: 20px; }
     .segment-header { background: #f8f9fa; margin: -20px -20px 15px -20px; padding: 10px 20px; }
     .field { margin-bottom: 10px; }
-    .field-label { font-weight: bold; color: #555; }
+    .field-label { font-weight: 600; color: #555; font-size: 0.875rem; }
     .script-text { background: #f0f0f0; padding: 10px; margin: 10px 0; border-left: 3px solid #3498db; }
     @media print { .segment { page-break-inside: avoid; } }
   </style>

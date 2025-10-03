@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { CAMERA_STYLE_DESCRIPTIONS } from '../srcCameraStyles';
 import { VOICE_TYPES } from '../voiceTypes';
 
@@ -88,7 +88,7 @@ function ScriptForm({ onSubmit, loading }) {
   };
 
   // Script preview logic
-  const previewScript = () => {
+  const previewScript = useCallback(() => {
     if (!formData.script || formData.script.trim().length < 50) {
       setScriptPreview([]);
       return;
@@ -144,14 +144,14 @@ function ScriptForm({ onSubmit, loading }) {
     }
     
     setScriptPreview(segments);
-  };
+  }, [formData.script, formData.targetWordsPerSegment]);
 
   // Update preview when script or target words change
   useEffect(() => {
     if (formData.showPreview) {
       previewScript();
     }
-  }, [formData.script, formData.targetWordsPerSegment, formData.showPreview]);
+  }, [formData.script, formData.targetWordsPerSegment, formData.showPreview, previewScript]);
 
   // Save/Load Settings Functions
   const saveSettings = () => {
@@ -658,7 +658,7 @@ function ScriptForm({ onSubmit, loading }) {
         className="submit-button"
         disabled={loading}
       >
-        {loading ? 'Generating...' : 'Generate Segments'}
+        {loading ? 'Generating...' : 'Generate'}
       </button>
     </form>
   );

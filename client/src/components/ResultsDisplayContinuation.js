@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import SettingsDisplay from './SettingsDisplay';
 import JSONEditor from './JSONEditor';
 
-function ResultsDisplay({ results }) {
+function ResultsDisplayContinuation({ results }) {
   const { segments, metadata, settings } = results;
   const [displayedSegments, setDisplayedSegments] = useState([]);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -19,7 +19,7 @@ function ResultsDisplay({ results }) {
 
       return () => clearTimeout(timer);
     }
-  }, [segments, currentIndex]);
+  }, [segments, currentIndex, segments?.length, displayedSegments.length]);
 
   // Reset when new results come in
   useEffect(() => {
@@ -61,7 +61,7 @@ function ResultsDisplay({ results }) {
 
   return (
     <div className="results-container">
-      <h2>Generated Segments</h2>
+      <h2>Generated Segments (Continuation Mode)</h2>
       
       {/* Display settings used for generation */}
       {settings && <SettingsDisplay settings={settings} />}
@@ -166,4 +166,5 @@ function ResultsDisplay({ results }) {
   );
 }
 
-export default ResultsDisplay;
+export default ResultsDisplayContinuation;
+
