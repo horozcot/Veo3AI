@@ -1,0 +1,97 @@
+/* Centralized Font Configuration for All Modes and Environments */
+
+/* Primary Font Stack - Used for all UI text */
+:root {
+  --font-primary: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  
+  /* Monospace Font Stack - Used for code, JSON, and technical content */
+  --font-mono: 'Consolas', 'Monaco', 'Courier New', monospace;
+  
+  /* Font Sizes */
+  --font-size-xs: 0.75rem;    /* 12px */
+  --font-size-sm: 0.875rem;   /* 14px */
+  --font-size-base: 1rem;     /* 16px */
+  --font-size-lg: 1.125rem;   /* 18px */
+  --font-size-xl: 1.25rem;    /* 20px */
+  --font-size-2xl: 1.5rem;    /* 24px */
+  --font-size-3xl: 2rem;      /* 32px */
+  --font-size-4xl: 2.5rem;    /* 40px */
+  
+  /* Font Weights */
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+  
+  /* Line Heights */
+  --line-height-tight: 1.2;
+  --line-height-normal: 1.5;
+  --line-height-relaxed: 1.6;
+}
+
+/* Global Font Application */
+body {
+  font-family: var(--font-primary);
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-normal);
+  line-height: var(--line-height-normal);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Code and Monospace Elements */
+code,
+pre,
+.json-editor-textarea,
+.line-numbers,
+.match-preview,
+.script-text,
+.video-prompt pre,
+.video-description pre,
+.json-content,
+.json-details pre {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-normal);
+  line-height: var(--line-height-normal);
+}
+
+/* Headings */
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-primary);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-tight);
+}
+
+/* Buttons and Interactive Elements */
+button,
+input,
+select,
+textarea {
+  font-family: var(--font-primary);
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-normal);
+  line-height: var(--line-height-normal);
+}
+
+/* Ensure consistent fonts in all environments */
+.App {
+  font-family: var(--font-primary);
+}
+
+/* Import environment-specific font configurations */
+@import './fonts-env.css';
+
+/* Print styles for consistent fonts in downloaded documents */
+@media print {
+  body {
+    font-family: var(--font-primary);
+  }
+  
+  code,
+  pre {
+    font-family: var(--font-mono);
+  }
+}

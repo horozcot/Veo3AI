@@ -123,7 +123,7 @@ function NewContinuationMode() {
           </div>
 
           <button type="submit" className="submit-button" disabled={loading}>
-            {loading ? 'Generating...' : 'Generate Segments'}
+            {loading ? 'Generating...' : 'Generate'}
           </button>
         </form>
       ) : (

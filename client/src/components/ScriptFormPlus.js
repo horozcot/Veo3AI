@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { VOICE_TYPES } from '../voiceTypes';
 
 function ScriptFormPlus({ onSubmit, loading }) {
@@ -87,7 +87,7 @@ function ScriptFormPlus({ onSubmit, loading }) {
     onSubmit(formData);
   };
 
-  const previewScript = () => {
+  const previewScript = useCallback(() => {
     if (!formData.script || formData.script.trim().length < 50) {
       setScriptPreview([]);
       return;
@@ -141,13 +141,13 @@ function ScriptFormPlus({ onSubmit, loading }) {
     }
 
     setScriptPreview(segments);
-  };
+  }, [formData.script, formData.targetWordsPerSegment]);
 
   useEffect(() => {
     if (formData.showPreview) {
       previewScript();
     }
-  }, [formData.script, formData.targetWordsPerSegment, formData.showPreview]);
+  }, [formData.script, formData.targetWordsPerSegment, formData.showPreview, previewScript]);
 
   const saveSettings = () => {
     const settingsToSave = { ...formData };
@@ -552,7 +552,7 @@ function ScriptFormPlus({ onSubmit, loading }) {
       </div>
 
       <button type="submit" className="submit-button" disabled={loading}>
-        {loading ? 'Generating...' : 'Generate Segments'}
+        {loading ? 'Generating...' : 'Generate'}
       </button>
     </form>
   );

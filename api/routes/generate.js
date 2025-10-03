@@ -135,8 +135,12 @@ router.post('/generate', async (req, res) => {
       // 4) sequentially build segments so we can pass previousSegment
       const segments = [];
       for (let i = 0; i < scriptSegments.length; i++) {
+        const segmentNumber = i + 1;
+        console.log(`[OpenAI] >>> start segment ${segmentNumber}/${scriptSegments.length}`);
+        console.time(`[seg ${segmentNumber}]`);
+        
         const seg = await OpenAIService.generateContinuationStyleSegment({
-          segmentNumber: i + 1,
+          segmentNumber,
           totalSegments: scriptSegments.length,
           scriptPart: scriptSegments[i],
           baseDescriptions,            // <— reuse!
@@ -147,6 +151,9 @@ router.post('/generate', async (req, res) => {
           previousSegment: i > 0 ? segments[i - 1] : null,
           ...params,
         });
+        
+        console.timeEnd(`[seg ${segmentNumber}]`);
+        console.log(`[OpenAI] <<< end segment ${segmentNumber}/${scriptSegments.length}`);
         segments.push(seg);
       }
 

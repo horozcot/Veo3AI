@@ -9,6 +9,10 @@
     "watch:client": "nodemon --watch client/src --ext js,jsx,css --exec \"npm run build\"",
     "build": "cd client && npm run build && cd .. && rimraf build && cpy \"**/*\" build --cwd=client/build",
     "start": "node server.js",
+    "start:test": "cross-env NODE_ENV=test node server.js",
+    "start:prod": "cross-env NODE_ENV=production node server.js",
+    "test:env": "cross-env NODE_ENV=test npm run build && npm run start:test",
+    "prod:env": "cross-env NODE_ENV=production npm run build && npm run start:prod",
     "install-all": "npm install && cd client && npm install",
     "heroku-postbuild": "cd client && npm install && npm run build"
   },
@@ -25,6 +29,7 @@
   },
   "devDependencies": {
     "concurrently": "^8.2.2",
+    "cross-env": "^7.0.3",
     "nodemon": "^3.0.1",
     "rimraf": "^5.0.5",
     "cpy-cli": "^5.0.0"

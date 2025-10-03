@@ -262,13 +262,15 @@ class OpenAIService {
 
   async generateBaseDescriptions(params, template){
     console.log('[OpenAI] Calling API for base descriptions');
-    const resp = await this.openai.chat.completions.create({
-      model: 'gpt-4o',
-      messages: [
-        { role:'system',
-          content: `${template}\n\nGenerate the base descriptions that will remain IDENTICAL across all segments. Follow the exact word count requirements. Return ONLY valid JSON.`},
-        { role:'user',
-          content: `Create base descriptions for:
+    const resp = await callOpenAIWithRetry(
+      () => withTimeout(
+        this.openai.chat.completions.create({
+          model: 'gpt-4o',
+          messages: [
+            { role:'system',
+              content: `${template}\n\nGenerate the base descriptions that will remain IDENTICAL across all segments. Follow the exact word count requirements. Return ONLY valid JSON.`},
+            { role:'user',
+              content: `Create base descriptions for:
 Age: ${params.ageRange}
 Gender: ${params.gender}
 Setting Mode: ${params.settingMode || 'single'}
@@ -291,11 +293,16 @@ Return a JSON object with these exact keys:
   "voice": "[50+ words or 100+ if enhanced]",
   "productHandling": "[50+ words]"
 }` }
-      ],
-      response_format:{ type:'json_object' },
-      temperature:0.3,
-      max_tokens: 3500 // keep this generous; it’s the big block
-    });
+          ],
+          response_format:{ type:'json_object' },
+          temperature:0.3,
+          max_tokens: 3500 // keep this generous; it’s the big block
+        }),
+        OPENAI_CALL_TIMEOUT,
+        'openai_base'
+      ),
+      'openai_base'
+    );
     const raw = resp.choices?.[0]?.message?.content || '';
     let parsed = safeParseJSON(raw);
     if (!parsed.ok) {
@@ -357,20 +364,25 @@ Position: ${params.previousSegment.action_timeline?.transition_prep || params.pr
   }
 
   async generateContinuationStyleSegment(params){
-    const template = await this.loadTemplate(params.jsonFormat || 'standard');
+    // Reuse provided template if available to avoid repeated disk reads
+    const template = params.template || await this.loadTemplate(params.jsonFormat || 'standard');
+    // Reuse provided base descriptions if available; otherwise, generate with timeout
     const base = params.baseDescriptions || await withTimeout(
       this.generateBaseDescriptions(params, template),
       OPENAI_CALL_TIMEOUT,
       'openai_base_for_continuation'
     );
 
-    const resp = await this.openai.chat.completions.create({
-      model: OPENAI_SEGMENT_MODEL,
-      messages: [
-        { role:'system',
-          content: `${template}\n\nGenerate a segment that maintains the EXACT same structure as standard segments, but with ENHANCED voice and behavior sections.` },
-        { role:'user',
-          content: `Create segment ${params.segmentNumber} of ${params.totalSegments}:
+    // Wrap the OpenAI call with retry and timeout similar to standard segments
+    const resp = await callOpenAIWithRetry(
+      () => withTimeout(
+        this.openai.chat.completions.create({
+          model: OPENAI_SEGMENT_MODEL,
+          messages: [
+            { role:'system',
+              content: `${template}\n\nGenerate a segment that maintains the EXACT same structure as standard segments, but with ENHANCED voice and behavior sections.` },
+            { role:'user',
+              content: `Create segment ${params.segmentNumber} of ${params.totalSegments}:
 
 Dialogue for this segment: "${params.scriptPart}"
 Product: ${params.product || 'N/A'}
@@ -394,11 +406,16 @@ Product Handling: ${base.productHandling || 'Natural handling'}
 Voice Profile to Maintain:
 ${JSON.stringify(params.voiceProfile || {}, null, 2)}
 ` }
-      ],
-      response_format:{ type:'json_object' },
-      temperature:0.5,
-      max_tokens: 2200
-    });
+          ],
+          response_format:{ type:'json_object' },
+          temperature:0.5,
+          max_tokens: 2200
+        }),
+        OPENAI_CALL_TIMEOUT,
+        `openai_continuation_segment_${params.segmentNumber}`
+      ),
+      `openai_continuation_segment_${params.segmentNumber}`
+    );
 
     const raw = resp.choices?.[0]?.message?.content || '';
     let parsed = safeParseJSON(raw);

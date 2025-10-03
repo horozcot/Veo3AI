@@ -1,0 +1,52 @@
+/* Environment-specific Font Configuration */
+/* Ensures fonts work consistently across development, staging, and production */
+
+/* Development Environment */
+@media (prefers-reduced-motion: no-preference) {
+  /* Enhanced font rendering for development */
+  body {
+    font-smooth: always;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+/* Production Environment Optimizations */
+@media (min-width: 1200px) {
+  /* Larger screens get slightly larger base font */
+  body {
+    font-size: 1.05rem;
+  }
+}
+
+/* Mobile Environment */
+@media (max-width: 768px) {
+  body {
+    font-size: 0.95rem;
+    line-height: 1.4;
+  }
+  
+  /* Ensure monospace fonts are readable on mobile */
+  code,
+  pre,
+  .json-editor-textarea {
+    font-size: 0.8rem;
+  }
+}
+
+/* Print Environment */
+@media print {
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+      'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+      sans-serif;
+    font-size: 12pt;
+    line-height: 1.4;
+  }
+  
+  code,
+  pre {
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 10pt;
+  }
+}
