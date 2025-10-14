@@ -141,21 +141,22 @@ function App() {
         <header className="App-header">
           <h1>AdScript Studio</h1>
           <p>The fastest way to segment, structure, and scale UGC ads.</p>
-          <div style={{
-            position: 'absolute',
-            top: '10px',
-            right: '10px',
-            background: envInfo.environment === 'production' ? '#28a745' : 
-                       envInfo.environment === 'test' ? '#ffc107' : '#17a2b8',
-            color: 'white',
-            padding: '5px 10px',
-            borderRadius: '4px',
-            fontSize: '12px',
-            fontWeight: 'bold',
-            textTransform: 'uppercase'
-          }}>
-            {envInfo.environment || 'development'} Environment
-          </div>
+          {envInfo.environment !== 'production' && (
+            <div style={{
+              position: 'absolute',
+              top: '10px',
+              right: '10px',
+              background: envInfo.environment === 'test' ? '#ffc107' : '#17a2b8',
+              color: 'white',
+              padding: '5px 10px',
+              borderRadius: '4px',
+              fontSize: '12px',
+              fontWeight: 'bold',
+              textTransform: 'uppercase'
+            }}>
+              {envInfo.environment || 'development'} Environment
+            </div>
+          )}
         </header>
 
         <main className="App-main">

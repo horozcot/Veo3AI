@@ -11,6 +11,7 @@ import config from './config/index.js';
 import generateRoute from './api/routes/generate.js';
 import generatePlusRoute from './api/routes/generate.plus.js';
 import generateNewContRoute from './api/routes/generate.newcont.js';
+import generateContinuationRoute from './api/routes/generateContinuation.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -70,6 +71,7 @@ app.use('/api', (req, res, next) => {
 app.use('/api', generateRoute);
 app.use('/api', generatePlusRoute);
 app.use('/api', generateNewContRoute);
+app.use('/api', generateContinuationRoute);
 
 app.get('/api/health', (_req, res) => {
   res.json({ 

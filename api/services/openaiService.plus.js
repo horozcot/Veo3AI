@@ -442,6 +442,23 @@ Character Guidance (MUST NOT CONTRADICT BASE):
 - Clothing Details: ${params.clothingDetails || 'unspecified'}
 - Accent/Region: ${params.accentRegion || 'neutral-american'}
 
+Ad Agency Framework Context:
+- Target Persona: ${params.persona || 'Not specified'}
+- Core Desire: ${params.coreDesire || 'Not specified'}
+- Awareness Level: ${params.awareness || 'unaware'}
+- Product Promise: ${params.promise || 'Not specified'}
+- Pattern Breaker: ${params.patternBreaker || 'Not specified'}
+- Headline Pattern: ${params.headlinePattern || 'direct-claim'}
+- Headline: ${params.headline || 'Not specified'}
+- Creative Type: ${params.creativeType || 'traditional-ugc'}
+
+Use this context to:
+1. Shape character behavior and dialogue to match the target persona
+2. Adjust explanation level based on awareness (unaware = more education, most-aware = more demonstration)
+3. Incorporate the pattern breaker as a unique angle or insight
+4. Match the headline pattern in the opening energy and approach
+5. Align with the creative type for appropriate pacing and presentation style
+
 ${params.previousSegment ? `Previous segment ended with:\nPosition: ${params.previousSegment.action_timeline.transition_prep}` : 'This is the opening segment.'}
 
 CRITICAL MOVEMENT RULE:
