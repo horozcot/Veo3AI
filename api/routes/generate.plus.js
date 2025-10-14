@@ -60,6 +60,15 @@ router.post('/generate-plus', async (req, res) => {
       characterFeatures,
       clothingDetails,
       accentRegion,
+      // ad agency framework fields
+      persona,
+      coreDesire,
+      awareness,
+      promise,
+      patternBreaker,
+      headlinePattern,
+      headline,
+      creativeType,
     } = req.body || {};
 
     // Validation
@@ -105,6 +114,14 @@ router.post('/generate-plus', async (req, res) => {
       characterFeatures,
       clothingDetails,
       accentRegion,
+      persona,
+      coreDesire,
+      awareness,
+      promise,
+      patternBreaker,
+      headlinePattern,
+      headline,
+      creativeType,
     };
 
     // Use the same hardened service as Standard

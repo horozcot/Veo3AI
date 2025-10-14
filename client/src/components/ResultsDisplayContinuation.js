@@ -3,7 +3,7 @@ import SettingsDisplay from './SettingsDisplay';
 import JSONEditor from './JSONEditor';
 
 function ResultsDisplayContinuation({ results }) {
-  const { segments, metadata, settings } = results;
+  const { segments = [], metadata = {}, settings = {} } = results || {};
   const [displayedSegments, setDisplayedSegments] = useState([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [editingSegmentIndex, setEditingSegmentIndex] = useState(null);
@@ -11,7 +11,7 @@ function ResultsDisplayContinuation({ results }) {
 
   // Animate segments appearing one by one
   useEffect(() => {
-    if (segments && segments.length > 0 && currentIndex < segments.length) {
+    if (segments && Array.isArray(segments) && segments.length > 0 && currentIndex < segments.length) {
       const timer = setTimeout(() => {
         setDisplayedSegments(prev => [...prev, segments[currentIndex]]);
         setCurrentIndex(prev => prev + 1);
@@ -19,13 +19,13 @@ function ResultsDisplayContinuation({ results }) {
 
       return () => clearTimeout(timer);
     }
-  }, [segments, currentIndex, segments?.length, displayedSegments.length]);
+  }, [segments, currentIndex, displayedSegments.length]);
 
   // Reset when new results come in
   useEffect(() => {
     setDisplayedSegments([]);
     setCurrentIndex(0);
-    setLocalSegments(segments || []);
+    setLocalSegments(Array.isArray(segments) ? segments : []);
   }, [segments]);
 
   const handleSegmentUpdate = (index, updatedSegment) => {

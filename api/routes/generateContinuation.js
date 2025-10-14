@@ -47,6 +47,18 @@ router.post('/generate-continuation', async (req, res) => {
       productStyle,
       energyArc,
       narrativeStyle,
+      // advanced character details
+      ethnicity,
+      characterFeatures,
+      clothingDetails,
+      accentRegion,
+      // ad agency framework fields
+      awareness,
+      promise,
+      patternBreaker,
+      headlinePattern,
+      headline,
+      creativeType,
       // continuity inputs
       previousSegment = null,
     } = req.body || {};
@@ -88,26 +100,75 @@ router.post('/generate-continuation', async (req, res) => {
       template
     );
 
-    // 2) call continuation generator (one segment)
-    const segment = await OpenAIService.generateContinuationStyleSegment({
-      segmentNumber: 1,
-      totalSegments: 1,
-      scriptPart: script.trim(),
+    // 2) generate multiple segments like standard mode
+    log('Calling OpenAIService.generateSegments with params:', {
+      scriptLength: script.length,
       product,
+      ageRange,
+      gender,
+      jsonFormat
+    });
+    
+    const result = await OpenAIService.generateSegments({
+      script,
+      product,
+      ageRange,
+      gender,
+      room,
+      style,
+      jsonFormat,
+      settingMode,
+      locations,
+      cameraStyle,
+      timeOfDay,
+      backgroundLife,
+      productStyle,
+      energyArc,
+      narrativeStyle,
+      voiceType: voiceProfile.voiceType,
+      energyLevel: voiceProfile.energyLevel,
+      accentRegion: voiceProfile.accentRegion,
+      ethnicity,
+      characterFeatures,
+      clothingDetails,
+      // ad agency framework fields
+      awareness,
+      promise,
+      patternBreaker,
+      headlinePattern,
+      headline,
+      creativeType,
       template,
       baseDescriptions,
-      currentLocation: settingMode === 'single' ? room : (locations[0] || room),
-      previousLocation: null,
-      nextLocation: null,
-      voiceProfile,
-      energyArc,
+      characterId: OpenAIService.generateCharacterId({
+        ageRange,
+        gender,
+        voiceType: voiceProfile.voiceType,
+        energyLevel: voiceProfile.energyLevel,
+        accentRegion: voiceProfile.accentRegion,
+        ethnicity,
+        characterFeatures,
+        clothingDetails
+      }),
+      voiceProfile: null // could be added later via extractDetailedVoiceProfile
     });
 
-    if (res.headersSent) {
-      log('response already sent; skipping success send');
-      return;
-    }
-    return res.json({ success: true, segment });
+    log('OpenAIService.generateSegments result:', {
+      hasSegments: !!result.segments,
+      segmentsCount: result.segments?.length,
+      hasMetadata: !!result.metadata
+    });
+
+  if (res.headersSent) {
+    log('response already sent; skipping success send');
+    return;
+  }
+  return res.json({
+    success: true,
+    segments: result.segments,
+    metadata: result.metadata,
+    voiceProfile: result.voiceProfile,
+  });
   } catch (err) {
     console.error('[Continuation] error:', err);
     if (!res.headersSent) {

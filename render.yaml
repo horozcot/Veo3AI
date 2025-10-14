@@ -3,7 +3,7 @@ services:
     name: ugc-script-splitter
     env: node
     plan: free
-    branch: main
+    branch: develop
     rootDir: ./
     healthCheckPath: /api/health
     buildCommand: |
